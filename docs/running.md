@@ -25,6 +25,8 @@ python3.12 -m venv .venv
 
 prompt 计数首次会下载固定 Qwen tokenizer/config/template，后续校验缓存并从本地加载。不会下载模型权重，也不需要 PyTorch。`PyTorch was not found` 是 tokenizer-only 环境的提示。
 
+默认 baseline 网页启动与 CSV 导出使用标准库，不加载 pandas。历史 `--length-demo`、`--export-only` 和 Stage 分析才按需加载相应数据分析依赖；prompt 回放仍需要 transformers/tokenizers 及它们自身的依赖。
+
 ## 不依赖原始数据的快速验证
 
 ```powershell
@@ -180,6 +182,7 @@ CLI 覆盖优先于配置文件；未提供的参数沿用配置。覆盖只影�
 & .\.venv\Scripts\python.exe -m unittest discover -s workload_profiling/tests -t .
 & .\.venv\Scripts\python.exe -m unittest workload_profiling.tests.test_baseline -v
 & .\.venv\Scripts\python.exe -m unittest workload_profiling.tests.test_baseline_ordering -v
+& .\.venv\Scripts\python.exe -m unittest workload_profiling.tests.test_baseline_dependencies -v
 ```
 
 集成测试检查已有本地 tokenizer、smoke 和历史标签；缺少相关产物时会有明确 skip，不代表核心 baseline 失败。test_baseline_ordering 验证批内排序、路由组合、容量限制、非法排列、跨批顺序和导出记录；首次下载的环境可能跳过部分真实产物集成检查。
@@ -191,6 +194,7 @@ CLI 覆盖优先于配置文件；未提供的参数沿用配置。覆盖只影�
 | `No module named workload_profiling/examples` | 从仓库根运行模块，或把仓库根放入调用方导入路径；示例用 `python -m examples.run_baseline` |
 | 找不到默认 prompt 文件 | 使用 `--source examples/prompt_requests.jsonl` 或长度示例；网页需要默认原始文件 |
 | tokenizer 首次下载失败 | 有网络后重试；固定缓存完整时可离线使用；先跑 lengths 模式不需要 tokenizer |
+| pandas DLL 报“应用程序控制策略已阻止此文件” | 这是 Windows 策略拦截二进制加载，不是缺少 PyTorch。默认 baseline 启动与 CSV 导出已不依赖 pandas；历史分析模式仍需要 pandas，须由环境管理方核验其安装与加载权限 |
 | tokenizer 校验和不匹配 | 本地文件与锁文件不一致，不要通过改哈希假装一致；重新获取同一固定版本的完整缓存 |
 | 序列长于 tokenizer 最大长度提示 | 本项目只计数、不执行模型、不截断；真实模型服务要另行检查上下文限制 |
 | Heavy 等待超过 batch_wait_ms | 该参数只约束收集阶段；查看 `capacity_wait_ms` 与容量配置 |

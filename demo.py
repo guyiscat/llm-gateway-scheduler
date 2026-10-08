@@ -12,13 +12,8 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 from uuid import uuid4
 
-import pandas as pd
-
-from workload_profiling.common.datasets import load_dataset
 from workload_profiling.common.paths import ARTIFACTS, DATA, stage_results
 from workload_profiling.common.tokenizer import load_tokenizer
-from workload_profiling.runtime import OutputHeavyPolicy, PercentileReference, RequestProcessor
-from workload_profiling.runtime.output_heavy_policy import validate_threshold
 
 CSV_PATH = DATA / "exports" / "request_workload_stage2_1.csv"
 EXAMPLE_RESPONSE = "大语言模型通过大量文本学习语言规律，并根据输入上下文生成回答。当前这段文本仅用于演示长度计算，没有调用真实模型。"
@@ -26,6 +21,9 @@ EXAMPLE_RESPONSE = "大语言模型通过大量文本学习语言规律，并根
 
 def export_csv(frame, path=CSV_PATH):
     """仅显式导出可读副本，不改变正式 Parquet。空值保持为空，兼容 Excel UTF-8。"""
+    # pandas is only needed by the historical Parquet/CSV mode.
+    import pandas as pd
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -46,6 +44,9 @@ class DemoService:
         self.config_path = config_path or stage_results("stage2_1") / "runtime_policy_config.json"
 
     def profile(self, payload):
+        from workload_profiling.runtime import OutputHeavyPolicy, RequestProcessor
+        from workload_profiling.runtime.output_heavy_policy import validate_threshold
+
         if not isinstance(payload, dict):
             raise ValueError("请输入一个 JSON 对象")
         prompt = payload.get("prompt")
@@ -221,6 +222,10 @@ def main():
         from workload_profiling.baseline.dashboard import serve
         serve(args.port, open_browser=args.open)
         return
+    # Keep historical analysis dependencies out of the default baseline path.
+    from workload_profiling.common.datasets import load_dataset
+    from workload_profiling.runtime import PercentileReference
+
     frame = load_dataset("stage2_1")
     try:
         path = export_csv(frame)

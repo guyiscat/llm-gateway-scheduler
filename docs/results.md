@@ -60,6 +60,8 @@ CLI 可用 `--output-dir`，Python 可用 execute 的 output 覆盖。每次持�
 
 CSV 空单元格是缺失，不是 0、false 或第一个端点。JSON 中同样的缺失用 null。空输入的 CSV 只提供最小列集；非空输入为完整轨迹列集。
 
+Baseline CSV 使用标准库 csv 写入，保留 UTF-8 BOM、列顺序与必要引号，不需要 pandas。整数直接写成整数，不因同列其他行为空而转换成小数或丢失大整数精度；历史 CSV 导出模式仍使用 pandas。
+
 ## batches JSON
 
 每个元素包含 batch_id、trigger、released_at_ms、size、request_ids、dispatch_order。request_ids 为到达顺序，dispatch_order 为排序后的计划顺序，两者包含完全相同的 ID。一个双重型请求只在一个 batch 中出现一次；触发批大小依据重型收集数，轻型不计入。批大小可小于配置值，因为超时或 EOF 提前释放。

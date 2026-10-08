@@ -1,9 +1,9 @@
 """Persist configuration, every request, batch/event trace and endpoint counters."""
+import csv
+import io
 import json
 from pathlib import Path
 from uuid import uuid4
-
-import pandas as pd
 
 from ..common.io import write_json
 
@@ -12,10 +12,27 @@ def atomic_text(path, text, encoding="utf-8"):
     path = Path(path)
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        temporary.write_text(text, encoding=encoding)
+        temporary.write_text(text, encoding=encoding, newline="")
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def requests_csv(rows):
+    """Serialize native request values without importing scientific DLLs.
+
+    None becomes an empty cell. Integers remain integers even when another row
+    has a missing value in that column. Quoting preserves commas and newlines.
+    """
+    fields = list(dict.fromkeys(key for row in rows for key in row))
+    if not fields:
+        fields = ["request_id", "source_line", "input_tokens", "output_tokens", "heavy",
+                  "arrival_at_ms", "endpoint_id", "dispatch_at_ms", "finished_at_ms", "status"]
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    return stream.getvalue()
 
 
 def write_outputs(result, config, directory, *, provenance=None):
@@ -27,11 +44,7 @@ def write_outputs(result, config, directory, *, provenance=None):
     write_json(directory / "endpoints.json", result.endpoints)
     write_json(directory / "batches.json", result.batches)
     atomic_text(directory / "events.jsonl", "".join(json.dumps(e, ensure_ascii=False, allow_nan=False) + "\n" for e in result.events))
-    frame = pd.DataFrame(result.requests)
-    if frame.empty:
-        frame = pd.DataFrame(columns=["request_id", "source_line", "input_tokens", "output_tokens", "heavy",
-                                      "arrival_at_ms", "endpoint_id", "dispatch_at_ms", "finished_at_ms", "status"])
-    atomic_text(directory / "requests.csv", frame.to_csv(index=False, na_rep=""), "utf-8-sig")
+    atomic_text(directory / "requests.csv", requests_csv(result.requests), "utf-8-sig")
     s = result.summary
     lines = ["# Heavy-request routing baseline", "",
              "离线事件驱动回放；时钟单位为虚拟毫秒。输出长度来自已记录回答（oracle），端点与服务时间为模拟参数。", "",
