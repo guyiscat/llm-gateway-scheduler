@@ -2,9 +2,10 @@
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
-from ..common.io import write_json, write_parquet
+from ..common.io import write_json, write_parquet, write_text
 from ..common.paths import CACHE
 
 
@@ -41,3 +42,17 @@ class AtomicWriteTests(unittest.TestCase):
             write_parquet(path, BrokenFrame())
         self.assertEqual(path.read_bytes(), b"previous")
         self.assertEqual([item.name for item in self.directory.iterdir()], ["result.parquet"])
+
+    def test_interrupted_text_preserves_previous_file_and_removes_temporary(self):
+        path = self.directory / "result.txt"
+        write_text(path, "previous")
+
+        def interrupt(temporary, text, **kwargs):
+            temporary.write_bytes(b"partial")
+            raise OSError("write interrupted")
+
+        with patch.object(Path, "write_text", autospec=True, side_effect=interrupt):
+            with self.assertRaises(OSError):
+                write_text(path, "replacement", encoding="utf-8-sig")
+        self.assertEqual(path.read_text(encoding="utf-8"), "previous")
+        self.assertEqual([item.name for item in self.directory.iterdir()], ["result.txt"])

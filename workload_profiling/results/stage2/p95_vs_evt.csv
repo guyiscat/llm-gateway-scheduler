@@ -1,3 +1,0 @@
-axis,evt_status,p95_threshold,evt_threshold,evt_empirical_percentile,p95_tail_count,p95_tail_fraction,evt_tail_count,evt_tail_fraction,both,p95_only,evt_only,agreement,jaccard
-input,OK,40342.5,3835.5999999999967,75.99305823370614,260,0.050134978789047435,1245.0,0.24006941766293868,260.0,0.0,985.0,0.8100655611261087,0.20883534136546184
-output,NO_STABLE_EVT_THRESHOLD,578.0,,,257,0.04955649826455843,,,,,,,

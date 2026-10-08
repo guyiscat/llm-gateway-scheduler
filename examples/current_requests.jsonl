@@ -1,2 +1,0 @@
-"解释二分查找。"
-{"messages":[{"role":"system","content":"你是一位编程助手。"},{"role":"user","content":"什么是二分查找？"},{"role":"assistant","content":"它用于在有序数组中查找目标。"},{"role":"user","content":"它的时间复杂度是多少？"}]}

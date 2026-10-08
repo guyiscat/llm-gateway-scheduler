@@ -1,0 +1,48 @@
+{
+  "busy_rpm_threshold": 0.95,
+  "busy_tpm_threshold": 0.95,
+  "busy_concurrency_reserve": 3,
+  "arrival_interval_ms": 1,
+  "arrival_mode": "burst",
+  "burst_size": 512,
+  "burst_span_ms": 20,
+  "batch_size": 16,
+  "batch_wait_ms": 20,
+  "input_threshold_tokens": 40342.5,
+  "output_classification": "percentile_dynamic",
+  "output_percentile_threshold": 0.8,
+  "window_ms": 60000,
+  "strategy": "min_rpm",
+  "batch_order": "priority_then_light",
+  "priority_assignment": "four_level",
+  "priority_seed": 20261008,
+  "endpoints": [
+    {
+      "endpoint_id": "endpoint_a",
+      "rpm_limit": 60000,
+      "tpm_limit": 500000000,
+      "concurrency_limit": 8,
+      "base_latency_ms": 5,
+      "input_tokens_per_ms": 2000,
+      "output_tokens_per_ms": 20
+    },
+    {
+      "endpoint_id": "endpoint_b",
+      "rpm_limit": 90000,
+      "tpm_limit": 750000000,
+      "concurrency_limit": 12,
+      "base_latency_ms": 5,
+      "input_tokens_per_ms": 2000,
+      "output_tokens_per_ms": 20
+    },
+    {
+      "endpoint_id": "endpoint_c",
+      "rpm_limit": 120000,
+      "tpm_limit": 1000000000,
+      "concurrency_limit": 16,
+      "base_latency_ms": 5,
+      "input_tokens_per_ms": 2000,
+      "output_tokens_per_ms": 20
+    }
+  ]
+}

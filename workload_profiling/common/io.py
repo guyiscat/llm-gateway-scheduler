@@ -33,16 +33,21 @@ def _temporary(path):
     return path.with_name(f".{path.name}.{uuid4().hex}.tmp")
 
 
-def write_json(path, value, *, nonfinite_to_none=False):
+def write_text(path, text, encoding="utf-8"):
+    """Atomically replace a text file, removing partial output on failure."""
     path = Path(path)
-    text = json.dumps(clean_json(value, nonfinite_to_none=nonfinite_to_none), ensure_ascii=False,
-                      indent=2, allow_nan=False) + "\n"
     temporary = _temporary(path)
     try:
-        temporary.write_text(text, encoding="utf-8")
+        temporary.write_text(text, encoding=encoding)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_json(path, value, *, nonfinite_to_none=False):
+    text = json.dumps(clean_json(value, nonfinite_to_none=nonfinite_to_none), ensure_ascii=False,
+                      indent=2, allow_nan=False) + "\n"
+    write_text(path, text)
 
 
 def write_parquet(path, frame):

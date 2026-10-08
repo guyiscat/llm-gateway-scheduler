@@ -1,5 +1,0 @@
-workload,count,fraction,status
-Normal,,,EVT_UNAVAILABLE
-Input-tail / Prefill-heavy,,,EVT_UNAVAILABLE
-Output-tail / Decode-heavy,,,EVT_UNAVAILABLE
-Both-heavy,,,EVT_UNAVAILABLE

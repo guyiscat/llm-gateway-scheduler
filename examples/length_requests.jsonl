@@ -1,9 +1,0 @@
-{"request_id":"light_0","input_tokens":100,"output_tokens":20}
-{"request_id":"input_heavy_1","input_tokens":50000,"output_tokens":10}
-{"request_id":"output_heavy_2","input_tokens":100,"output_tokens":700}
-{"request_id":"light_3","input_tokens":100,"output_tokens":20}
-{"request_id":"both_heavy_4","input_tokens":60000,"output_tokens":800}
-{"request_id":"light_5","input_tokens":100,"output_tokens":20}
-{"request_id":"light_6","input_tokens":100,"output_tokens":20}
-{"request_id":"light_7","input_tokens":100,"output_tokens":20}
-{"request_id":"output_heavy_8","input_tokens":100,"output_tokens":600}

@@ -7,9 +7,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-from ..runtime.congestion_interface import CongestionProvider, CongestionState, StaticCongestionProvider
-from ..runtime.output_heavy_policy import OutputHeavyPolicy, load_config
-from ..runtime.percentile_reference import PercentileReference
+from ..policies.congestion import CongestionState
+from ..policies.output_heavy_policy import OutputHeavyPolicy, load_config
+from ..policies.percentile_reference import PercentileReference
 
 
 class PercentileTests(unittest.TestCase):
@@ -67,13 +67,13 @@ class PolicyTests(unittest.TestCase):
         self.config = {"default_threshold": 0.95,
                        "congestion_threshold_mapping": {"idle": 0.98, "normal": 0.95, "busy": 0.90, "critical": 0.80},
                        "percentile_definition": "empirical_cdf_right", "reference_sample_count": None}
-        config_patch = patch("workload_profiling.runtime.output_heavy_policy.load_config",
+        config_patch = patch("workload_profiling.policies.output_heavy_policy.load_config",
                              side_effect=lambda *args, **kwargs: deepcopy(self.config))
         config_patch.start()
         self.addCleanup(config_patch.stop)
         self.reference = PercentileReference.from_lengths([10, 20, 20, 40])
-        self.provider = StaticCongestionProvider(CongestionState.NORMAL)
-        self.policy = OutputHeavyPolicy(self.reference, self.provider)
+        self.policy = OutputHeavyPolicy(self.reference)
+        self.policy.update_from_congestion(CongestionState.NORMAL)
 
     def test_default_without_provider(self):
         policy = OutputHeavyPolicy(self.reference)
@@ -87,7 +87,7 @@ class PolicyTests(unittest.TestCase):
         normal = self.policy.classify(0.92)
         self.assertEqual(normal["output_heavy_threshold"], 0.95)
         self.assertFalse(normal["output_heavy"])
-        self.provider.set_state(CongestionState.BUSY)
+        self.policy.update_from_congestion(CongestionState.BUSY)
         busy = self.policy.classify(0.92)
         self.assertEqual(busy["output_heavy_threshold"], 0.90)
         self.assertTrue(busy["output_heavy"])
@@ -98,14 +98,14 @@ class PolicyTests(unittest.TestCase):
                     CongestionState.BUSY: 0.90, CongestionState.CRITICAL: 0.80}
         for state, threshold in expected.items():
             with self.subTest(state=state):
-                self.provider.set_state(state)
+                self.policy.update_from_congestion(state)
                 self.assertEqual(self.policy.get_threshold(), threshold)
 
     def test_manual_wins_every_state_until_clear(self):
         self.policy.set_threshold(0.85)
         for state in CongestionState:
             with self.subTest(state=state):
-                self.provider.set_state(state)
+                self.policy.update_from_congestion(state)
                 decision = self.policy.classify(0.86)
                 self.assertEqual(decision["output_heavy_threshold"], 0.85)
                 self.assertEqual(decision["threshold_source"], "MANUAL")
@@ -155,34 +155,13 @@ class PolicyTests(unittest.TestCase):
 
     def test_threshold_changes_do_not_change_percentile(self):
         before = self.policy.evaluate(20)
-        self.provider.set_state(CongestionState.CRITICAL)
+        self.policy.update_from_congestion(CongestionState.CRITICAL)
         self.policy.set_threshold(0.70)
         after = self.policy.evaluate(20)
         self.assertEqual(before["output_percentile"], after["output_percentile"])
         self.assertEqual(self.reference.sample_count, 4)
 
-    def test_provider_read_once_per_decision(self):
-        class CountingProvider(CongestionProvider):
-            calls = 0
 
-            def get_state(self):
-                self.calls += 1
-                return CongestionState.BUSY
-
-        provider = CountingProvider()
-        decision = OutputHeavyPolicy(self.reference, provider).evaluate(20)
-        self.assertEqual(provider.calls, 1)
-        self.assertEqual(decision["congestion_state"], "busy")
-
-    def test_provider_and_state_contract(self):
-        with self.assertRaises(TypeError):
-            CongestionProvider()
-        with self.assertRaises(ValueError):
-            self.provider.set_state("busy")
-        with self.assertRaises(ValueError):
-            self.policy.update_from_congestion(None)
-        with self.assertRaises(ValueError):
-            OutputHeavyPolicy(congestion_provider=object())
 
     def test_evaluate_requires_reference(self):
         with self.assertRaisesRegex(ValueError, "requires a fixed"):
@@ -191,15 +170,15 @@ class PolicyTests(unittest.TestCase):
     def test_central_config_changes_policy(self):
         config = load_config()
         config["congestion_threshold_mapping"]["busy"] = 0.88
-        with patch("workload_profiling.runtime.output_heavy_policy.load_config", return_value=config):
-            policy = OutputHeavyPolicy(self.reference, self.provider)
-        self.provider.set_state(CongestionState.BUSY)
+        with patch("workload_profiling.policies.output_heavy_policy.load_config", return_value=config):
+            policy = OutputHeavyPolicy(self.reference)
+        policy.update_from_congestion(CongestionState.BUSY)
         self.assertEqual(policy.get_threshold(), 0.88)
 
     def test_reference_count_mismatch_rejected(self):
         config = load_config()
         config["reference_sample_count"] = 99
-        with patch("workload_profiling.runtime.output_heavy_policy.load_config", return_value=config):
+        with patch("workload_profiling.policies.output_heavy_policy.load_config", return_value=config):
             with self.assertRaisesRegex(ValueError, "sample counts"):
                 OutputHeavyPolicy(self.reference)
 

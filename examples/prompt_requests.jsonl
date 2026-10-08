@@ -1,2 +1,0 @@
-{"prompt":{"messages":[{"role":"user","content":"你好，请介绍一下二分查找。"}]} ,"response":"二分查找通过比较有序数组的中间元素，每次排除一半候选区间。"}
-{"prompt":{"messages":[{"role":"system","content":"你是一位编程助手。"},{"role":"user","content":"什么是二分查找？"},{"role":"assistant","content":"二分查找用于在有序数组中查找目标。"},{"role":"user","content":"请给出一个 Python 示例。"}]} ,"response":"可以使用两个索引记录查找区间，在循环中计算中间位置并更新边界。"}

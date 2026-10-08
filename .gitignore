@@ -176,6 +176,10 @@ workload_profiling/cache/
 
 # Rebuildable exports and local replay runs (historical stage reports stay visible).
 workload_profiling/data/exports/
+workload_profiling/results/simulation/
+workload_profiling/results/simulation_example/
+workload_profiling/results/simulation_custom/
+# Existing local runs made before the naming migration.
 workload_profiling/results/baseline/
 workload_profiling/results/baseline_example/
 workload_profiling/results/baseline_custom/

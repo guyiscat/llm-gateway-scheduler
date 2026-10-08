@@ -2,8 +2,8 @@ from dataclasses import replace
 import math
 import unittest
 
-from ..baseline import BaselineRunner, EndpointConfig, WorkloadRequest, load_config
-from ..baseline.models import EndpointState
+from ..simulation import SimulationRunner, EndpointConfig, WorkloadRequest, load_config
+from ..simulation.models import EndpointState
 
 
 class ServiceJitterTests(unittest.TestCase):
@@ -35,12 +35,13 @@ class ServiceJitterTests(unittest.TestCase):
 
     def test_replay_repeats_and_preserves_capacity_accounting(self):
         settings = load_config()
-        settings = replace(settings, batch_size=1, input_threshold_tokens=0,
+        settings = replace(settings, batch_size=1, input_threshold_tokens=0, busy_concurrency_reserve=0,
+                           arrival_mode="fixed", priority_assignment="uniform",
                            endpoints=(replace(settings.endpoints[0], concurrency_limit=1,
                                               service_jitter_fraction=.2),))
         requests = [WorkloadRequest(str(i), 10, 1000) for i in range(8)]
-        first = BaselineRunner(settings).run(requests)
-        second = BaselineRunner(settings).run(requests)
+        first = SimulationRunner(settings).run(requests)
+        second = SimulationRunner(settings).run(requests)
         self.assertEqual(first.requests, second.requests)
         self.assertEqual(first.events, second.events)
         self.assertEqual(first.summary["completed_requests"], 8)

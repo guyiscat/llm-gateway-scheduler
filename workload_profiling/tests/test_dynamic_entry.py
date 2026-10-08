@@ -6,24 +6,24 @@ import unittest
 
 import pandas as pd
 
-from ..baseline import BaselineRunner, load_config
-from ..baseline.classification import OutputPercentileClassifier
-from ..baseline.models import EndpointView
-from ..baseline.reporting import write_outputs
-from ..baseline.run import execute
+from ..simulation import SimulationRunner, load_config
+from ..simulation.classification import OutputPercentileClassifier
+from ..simulation.models import EndpointView
+from ..simulation.reporting import write_outputs
+from ..simulation.cli import execute
 from ..common.paths import PACKAGE
-from ..runtime import PercentileReference
-from .test_baseline import config, endpoint, req, temporary_directory
+from ..policies import PercentileReference
+from .support import config, endpoint, req, temporary_directory
 
 
 class DynamicEntryTests(unittest.TestCase):
     def settings(self, **changes):
-        return config(**(dict(batch_scope="all", output_classification="percentile_dynamic",
-                             batch_order="light_first_fifo", batch_size=1,
+        return config(**(dict(output_classification="percentile_dynamic",
+                             batch_order="priority_then_light", batch_size=1,
                              endpoints=(endpoint(concurrency=1, latency=9),)) | changes))
 
     def profile(self):
-        return json.loads((PACKAGE / "config/dynamic_output_policy.json").read_text(encoding="utf-8"))
+        return json.loads((PACKAGE / "config/pressure_threshold_policy.json").read_text(encoding="utf-8"))
 
     def reference(self):
         return PercentileReference.from_lengths(list(range(1,11)))
@@ -71,13 +71,13 @@ class DynamicEntryTests(unittest.TestCase):
             path = directory / "original_policy.json"
             path.write_text(json.dumps(self.profile()), encoding="utf-8")
             policy = OutputPercentileClassifier(settings, self.reference(), policy_path=path)
-            result = BaselineRunner(settings, classification_policy=policy).run([req(0,1,8),req(1,1,8)])
+            result = SimulationRunner(settings, classification_policy=policy).run([req(0,1,8),req(1,1,8)])
             output = directory / "exported"
             write_outputs(result, settings, output)
             path.unlink()
             replay_config = load_config(output / "replay_config.json")
             self.assertEqual(Path(replay_config.output_policy_path), output / "classification_policy.json")
-            reloaded = BaselineRunner(replay_config).run([req(0,1,8),req(1,1,8)])
+            reloaded = SimulationRunner(replay_config).run([req(0,1,8),req(1,1,8)])
             self.assertEqual(result.requests, reloaded.requests)
             self.assertEqual(result.events, reloaded.events)
             self.assertEqual(result.batches, reloaded.batches)
@@ -91,7 +91,7 @@ class DynamicEntryTests(unittest.TestCase):
         with temporary_directory() as directory:
             reference = self.reference()
             initial = self.settings()
-            runner = BaselineRunner(initial, classification_policy=OutputPercentileClassifier(initial, reference))
+            runner = SimulationRunner(initial, classification_policy=OutputPercentileClassifier(initial, reference))
             write_outputs(runner.run([]), initial, directory / "resources")
             settings = load_config(directory / "resources/replay_config.json")
             source = directory / "requests.jsonl"
