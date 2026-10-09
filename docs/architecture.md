@@ -21,7 +21,7 @@
 | adapters.litellm_adapter | 路由决定、部署绑定、注入的调用函数 | LiteLLM 参数或执行反馈 |
 | core.scheduler | 请求、时钟推进、反馈 | 编排模块、调度记录、派发结果及事件 |
 | simulation.execution / engine | 实际长度、服务参数 | 虚拟完成事件，回送 accept_feedback |
-| simulation.reporting / web | 回放结果 | 文件导出及本地网页 |
+| adapters.route_output | 已派发 RouteDecision、所选 EndpointConfig | 按实际派发顺序写入 LiteLLM 交付 JSONL；成功后原子替换 |
 
 核心不依赖 tokenizer、原始数据格式、虚拟流量和模拟服务模型。真实接入直接创建 SchedulerRequest，已有长度和预测不重新计算。普通 token 分类的核心导入只需标准库；选择百分位策略时才加载已有参考相关依赖。
 
@@ -47,6 +47,8 @@ flowchart TD
   N --> O[统一 Router / 可替换选择策略]
   O --> P[预留 RPM、预测 TPM 与并发]
   P --> Q[真实适配器或模拟执行器]
+  P --> T[RouteOutputRecorder / LiteLLMAdapter.build_params]
+  T --> U[本地 routes.jsonl / 交付参数]
   Q --> R[accept_feedback]
   R --> S[修正实际用量 / 释放并发 / 更新历史与冷却]
   S --> D
@@ -60,7 +62,7 @@ flowchart TD
 6. 分类在即时到达或窗口释放时冻结；排序只调用一次。默认保持旧算法，可选 weighted_length 按输入和预测输出加权。计划冻结后不随状态变化重新排序。
 7. 恢复时先尝试高优先级，再普通即时，最后窗口队列。即时通道跳过暂不可派发的请求；窗口队首不可执行时，后续窗口请求等待。顺序提交允许并发执行，不要求前一条完成。
 8. 每条派发前重新过滤。普通即时通道还筛选当前不繁忙端点；高优先级与窗口通道使用全部健康可行候选。Router 接收单请求、价格、当前快照和近期缓存，再调用独立选择策略。
-9. 选择有效端点后预留额度。调用方通过 take_decisions 或 on_dispatch 获得决定，交给执行器。路由算法不构建模型调用参数，不读取实际输出，不计算服务时间。
+9. 选择有效端点后预留额度。调用方通过 take_decisions 或 on_dispatch 获得决定，交给执行器。默认回放的 on_route 先调用 RouteOutputRecorder，用 LiteLLMAdapter 构建并记录交付参数，再计划模拟完成事件。路由算法不构建模型调用参数，不读取实际输出，不计算服务时间。
 10. 完成/失败通过 accept_feedback 回送，释放并发、修正实际 tokens、更新历史和失败状态，再尝试等待请求。重复、未知、端点或开始时间不匹配的反馈在变更资源前拒绝；迟到反馈不倒退时钟。
 
 ## 额度、冷却与历史
@@ -71,7 +73,7 @@ flowchart TD
 
 没有每分钟整点清零任务。到达、tick、反馈及快照读取均按时间清理；next_wakeup_ms 提供窗口截止、最早额度/冷却恢复时间。模拟引擎推进到这些时刻；真实网关需注册到自身定时器，并串行提交状态变更。核心不启动后台线程，也不提供多进程一致性存储。
 
-Endpoint/rate_limit 失败进入 cooldown_ms；明显参数错误、取消、未知原因不自动冷却。healthy 为外部行政状态，独立于自动冷却。动态导出含用量、并发、健康、冷却和失败数。load_health_state 只恢复健康/冷却，不恢复历史配额或在途请求；带未结束执行的状态会被拒绝，不支持跨进程完整续跑。
+Endpoint/rate_limit 失败进入 cooldown_ms；明显参数错误、取消、未知原因不自动冷却。healthy 为外部行政状态，独立于自动冷却。states.export 可在内存中读取用量、并发、健康、冷却和失败数。load_health_state 只恢复健康/冷却，不恢复历史配额或在途请求；带未结束执行的状态会被拒绝，不支持跨进程完整续跑。
 
 历史保留 `(t−history_window_ms,t]` 的完成样本，每端点再限制 history_max_samples。完成时增量更新，过期/超量时扣除，路由读取均值而不重扫日志。迟到反馈按完成时间插入。成功样本用于延迟均值，失败用于失败数，未知指标保持 null。E2E 包含到达至完成的排队；适配器 TTFT 从执行调用开始至首次非空内容/工具输出；TPOT 按已知实际输出 token 数计算观测平均，流式分块不等于逐 token 精确测量。
 
@@ -83,8 +85,14 @@ Endpoint/rate_limit 失败进入 cooldown_ms；明显参数错误、取消、未
 
 服务时间保持原公式：`max(1, ceil((基础时延 + 实际输入/输入速度 + 实际输出/输出速度) × 波动倍率))`，波动按 seed/request_id/endpoint_id 固定哈希。模拟没有逐 token 事件，所以 TTFT/TPOT 为 null。
 
-同一虚拟时刻先清理资源并处理完成，再依到达顺序尝试即时请求，最后处理窗口超时和剩余派发。min_rpm 选择请求数/RPM 上限最低端点，同分按配置顺序。重构回放的 3168 条请求、27907 条事件、143 个窗口，原字段、选择、顺序、时间和汇总一致；策略类模块路径改变。
+同一虚拟时刻先清理资源并处理完成，再依到达顺序尝试即时请求，最后处理窗口超时和剩余派发。min_rpm 选择请求数/RPM 上限最低端点，同分按配置顺序。CLI 默认回放 3168 条原始记录；调度明细、事件和汇总保留在 RunResult 内存中。
 
 冻结参考来自 5186 个历史样本、754 个不同长度；右连续 ECDF 为长度≤x的频数/N，与当前 3168 条回放不是同一分母。pressure_rules 使用并发和已到达待执行请求决定分类门槛，不参与调度繁忙的 OR 与模型池 AND 判断。
 
 Pareto 尚未实现。接入点为 select_endpoint(request, endpoints, context)，context 提供价格及近期 E2E/TTFT/TPOT，请求提供模型、流式标志和 SLO。默认 min_rpm 不使用成本或 SLO 打分。
+
+## 输出边界
+
+CLI 唯一写出的正式文件为 `results/routes.jsonl`，内容是实际派发的请求 ID、端点、时刻和 LiteLLM 参数。记录器在核心之外，不参与候选筛选、排序或状态维护；反馈保留在运行内存中。成功排空系统并验证输入未变后原子替换文件，失败保留上一份输出。固定参考 Parquet 与元数据仍是分类输入。
+
+详细模块图：[Mermaid 源码](figures/Endpoint模块输入输出与数据流_修正版.txt) · [SVG](figures/Endpoint模块输入输出与数据流_修正版.svg) · [PNG](figures/Endpoint模块输入输出与数据流_修正版.png)。

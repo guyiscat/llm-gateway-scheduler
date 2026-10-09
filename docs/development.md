@@ -100,7 +100,7 @@ execute 接受同步 completion 函数，可以是 LiteLLM completion 或项目�
 
 默认错误映射：400/404/422 为 request，429 为 rate_limit，5xx/TimeoutError/ConnectionError 为 endpoint，未知原因保留 None；可注入 error_classifier 针对 SDK 异常扩展。输出回调异常归为 request，避免错误冷却端点。参考 [LiteLLM 参数文档](https://docs.litellm.ai/docs/completion/input) 与 [流式接口](https://docs.litellm.ai/docs/completion/stream)。
 
-## 模拟、导出与网页
+## 模拟与本地路由记录
 
 旧 API 继续可用：
 
@@ -114,9 +114,30 @@ result = runner.run([WorkloadRequest("sample", 100, 300)])
 
 WorkloadRequest 是离线实际观测，output_tokens 为实际输出；可附上 priority=0/1、predicted_output_tokens、messages、target_model、stream、max_tokens、slo、metadata。RequestParameterGenerator.prepare 生成标准请求和独立观测；SimulatedRequestSender.schedule 只决定到达时间，submit(request,scheduler) 使用同一入口。真实接入绕过这些模拟模块。
 
-SimulationRunner 每实例运行一次。可注入 strategy、batch_order、classification_policy、executor；executor.plan(decision,observation) 返回 ExecutionResult，便于模拟失败/限流；不另维护资源计数。CLI execute 负责来源校验、tokenizer、回放与原子单文件导出。百分位模式生成自包含 replay_config.json。
+SimulationRunner 每实例运行一次。可注入 strategy、batch_order、classification_policy、executor、on_route；executor.plan(decision,observation) 返回 ExecutionResult，便于模拟失败/限流；不另维护资源计数。on_route(decision) 在已预留的实际派发时同步调用，先于 executor.plan；不能是 async，也不能返回 awaitable。回调错误会终止回放，核心撤销当前在途预留。
 
-网页接口保持：GET /、GET /api/simulation/config、POST /api/simulation/run、GET /api/simulation/status、GET /api/simulation/requests?offset=0&limit=100、GET /simulation/requests.csv。POST 可传 {"limit":200} 或完整组合 config；limit 省略/null表示全部。运行中拒绝第二个任务，分页 limit 1～200，结果保存到 results/simulation/web/唯一ID。网页只允许内置策略，不运行网络模型。
+CLI 的 execute 返回单个 RunResult，负责来源校验、tokenizer、回放与原子记录：
+
+```python
+from workload_profiling.simulation.cli import execute
+result = execute(load_config(), limit=200,
+                 output="workload_profiling/results/routes.jsonl")
+# result.requests/events/batches/summary 等可用于内存分析。
+```
+
+记录器也可独立用于核心派发回调：
+
+```python
+from workload_profiling.adapters import RouteOutputRecorder
+
+with RouteOutputRecorder("workload_profiling/results/routes.jsonl", endpoints) as recorder:
+    scheduler = Scheduler(endpoints, settings, on_dispatch=recorder)
+    # 在此同步提交请求、推进 tick 并接受反馈，直到本次运行结束。
+```
+
+RouteOutputRecorder 使用 EndpointConfig 和 LiteLLMAdapter.build_params 构建每行交付记录；可通过 adapter=LiteLLMAdapter(endpoint_resolver=...) 注入部署映射。未派发或拒绝请求没有记录。上下文正常退出时发布整份输出；异常保留原文件并删除临时文件。同一个记录器只用于一次串行运行；回调本身只负责记录，执行及反馈由调用方继续驱动。
+
+默认回放创建记录器并作为 SimulationRunner.on_route 注入。它记录实际派发顺序，不遍历运行结束后的到达顺序结果表。记录含 request_id、selected_endpoint_id、dispatched_at_ms、litellm_params；模拟完成事件、响应和状态快照不写入。默认端点仍为模拟占位；真实 LiteLLM 调用需配置部署，凭据由执行环境提供。
 
 ## 验证
 
@@ -124,14 +145,6 @@ SimulationRunner 每实例运行一次。可注入 strategy、batch_order、clas
 & .\.venv\Scripts\python.exe -m unittest discover -s workload_profiling/tests -t .
 ```
 
-当前 125 项测试覆盖原基线、三条路径、模型池繁忙与硬容量区别、过滤/恢复、滚动额度、反馈匹配/迟到/实际用量、缓存边界、二档概率、随机发送、策略协议、分层配置、LiteLLM参数/流式/错误、本地 HTTP 及 tokenizer 的当前依赖。完整 3168 条回放与重构前快照逐项比较，原字段一致；策略类模块路径允许迁移，新增字段单独验证。
+当前 128 项测试覆盖三条路径、模型池繁忙与硬容量区别、过滤/恢复、滚动额度、反馈匹配/迟到/实际用量、缓存边界、优先级、发送模式、策略协议、分层配置、LiteLLM参数/流式/错误、tokenizer 依赖，以及路由记录的交付内容、派发顺序、拒绝遗漏和原子失败保护。
 
-## 清理边界与待处理目录
-
-已清理未使用的备用实验数据、重复模拟输出、过时的数据说明、下载临时记录、编译缓存和未调用的辅助函数。当前输入口径统一在使用指南中说明；tokenizer 缓存校验文件改为 tokenizer_manifest.json，不再要求已移除的 scipy/matplotlib 元数据依赖。
-
-[cleanup_report.json](../cleanup_report.json) 保存清理清单、输入与参考哈希、测试/完整回放验证，以及已删除生成结果的运行配置，便于需要时重建。没有新建文档备份目录。
-
-`.checkpoints/` 和 `workload_profiling/cache/modular_refactor/` 包含旧备份与验证资产，自动审批拒绝永久删除，因此仍保留，属于待处理内容而非核心依赖。`cache/tmp8pamrgwx` 和 `cache/tmptxhn8jwj` 删除时返回 UnauthorizedAccessException；没有擅自修改它们的所有者或 ACL。
-
-[cleanup_pending.ps1](../cleanup_pending.ps1) 列出这四个具体目标。默认运行只预览；确认永久删除后由用户显式传入 -Execute。脚本校验工作区边界，遇到链接目录或权限错误即停止该目标，不修改文件权限。临时目录仍拒绝访问时，需用户通过 Windows 文件夹属性的安全设置处理权限，或交由管理员处理。不要把删除目标改为项目根目录、.git 或 .venv。
+当前主线保留原始请求、冻结参考、tokenizer 缓存、四份有效配置、核心算法及模拟反馈。网页服务、HTML 可视化、报表导出与旧网页结果已删除；本地结果只记录路由交付参数。

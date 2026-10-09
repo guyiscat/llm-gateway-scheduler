@@ -240,24 +240,21 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         source = [WorkloadRequest(str(index), 1, 1) for index in range(30)]
         self.assertEqual(SimulationRunner(cfg).run(source), SimulationRunner(cfg).run(source))
 
-    def test_adaptive_config_and_export_can_be_replayed(self):
+    def test_adaptive_route_outputs_are_reproducible(self):
         cfg = load_config(PACKAGE / "config/simulation_adaptive.json")
         with temporary_directory() as directory:
             source = directory / "lengths.jsonl"
             source.write_text("\n".join(json.dumps({"request_id": str(i), "input_tokens": 1,
                                "output_tokens": 2, "priority_level": i % 4 + 1}) for i in range(8)), encoding="utf-8")
-            first, summary = execute(cfg, source=source, source_format="lengths", output=directory / "first")
-            replay_cfg = load_config(directory / "first/replay_config.json")
-            second, _ = execute(replay_cfg, source=source, source_format="lengths", output=directory / "second")
+            first = execute(cfg, source=source, source_format="lengths", output=directory / "first.jsonl")
+            second = execute(cfg, source=source, source_format="lengths", output=directory / "second.jsonl")
             self.assertEqual(first.requests, second.requests)
             self.assertEqual(first.events, second.events)
-            self.assertEqual(summary["priority_levels"]["4"]["requests"], 2)
-            trace = (directory / "first/threshold_trace.csv").read_text(encoding="utf-8-sig")
-            self.assertIn("classification_context", trace.splitlines()[0])
-            import pandas as pd
-            frame = pd.read_csv(directory / "first/requests.csv")
-            for column in ("busy_endpoints_at_arrival", "routing_candidate_ids"):
-                self.assertTrue(all(isinstance(json.loads(value), list) for value in frame[column]))
+            self.assertEqual(first.summary["priority_levels"]["4"]["requests"], 2)
+            self.assertEqual((directory / "first.jsonl").read_bytes(), (directory / "second.jsonl").read_bytes())
+            routes = [json.loads(line) for line in (directory / "first.jsonl").read_text(encoding="utf-8").splitlines()]
+            dispatched = [event for event in first.events if event["event"] == "dispatched"]
+            self.assertEqual([row["request_id"] for row in routes], [event["request_id"] for event in dispatched])
 
 
 if __name__ == "__main__":

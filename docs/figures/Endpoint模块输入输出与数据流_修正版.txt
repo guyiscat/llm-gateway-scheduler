@@ -16,7 +16,7 @@ flowchart TB
     SENDER["模拟请求发送<br/>输入：标准请求 + 到达模式/频率<br/>输出：按到达时刻调用 submit_request<br/>fixed / random / burst"]
     SIMCFG["模拟服务参数<br/>输入：simulation_adaptive.json<br/>输出：延迟、吞吐与可选抖动参数<br/>不属于 Endpoint 的调度容量配置"]
     SIMEXEC["模拟执行器｜默认执行路径<br/>输入：RouteDecision + 实际观测 + 服务参数<br/>输出：虚拟完成事件 / ExecutionResult<br/>默认只生成 E2E，TTFT/TPOT 未模拟"]
-    REPORT["实验结果与网页展示<br/>输入：调度记录 + 事件 + 汇总结果<br/>输出：表格、统计报表与导出文件<br/>不参与 Endpoint 选择"]
+    LOG["本地路由交付记录 routes.jsonl<br/>输入：已派发 RouteDecision + EndpointConfig<br/>转换：LiteLLMAdapter.build_params<br/>输出：请求 ID、端点、派发时刻与 litellm_params<br/>成功后原子发布；不参与 Endpoint 选择"]
   end
 
   REAL["真实网关接入｜可选上游集成<br/>输入：实际请求 + 已知长度/预测/SLO<br/>输出：SchedulerRequest<br/>当前未部署模型请求网关"]
@@ -84,8 +84,8 @@ flowchart TB
   SIMCFG -.->|服务参数| SIMEXEC
   SIMEXEC -->|虚拟完成时回送 ExecutionResult| FEEDBACK
   LITELLM -->|ExecutionResult| FEEDBACK
-  FEEDBACK -->|记录 / 事件 / 统计| REPORT
-  REJECT -->|拒绝记录| REPORT
+  EXEC -->|实际派发时记录交付参数| LOG
+  ECFG -.->|所选端点与部署绑定| LOG
 
   SCFG -.->|参数| RECEIVE
   SCFG -.->|繁忙阈值| BUSY
@@ -126,7 +126,7 @@ flowchart TB
   classDef guard fill:#fff7ed,stroke:#bf9159,color:#735020,stroke-width:1.5px;
   classDef decision fill:#eef4fb,stroke:#527fa5,color:#18324b,stroke-width:1.5px;
   classDef state fill:#edf6ff,stroke:#4e8fc1,color:#16496f,stroke-width:2px;
-  class DATA,SENDER,SIMCFG,SIMEXEC,REPORT sim;
+  class DATA,SENDER,SIMCFG,SIMEXEC,LOG sim;
   class REAL,LITELLM optional;
   class RECEIVE,FILTER,HIGH,IDLE,WINDOW,CIM,CWIN,RANK,DISPATCH,CHECK,ROUTER,EXEC core;
   class PRIORITY,BUSY decision;

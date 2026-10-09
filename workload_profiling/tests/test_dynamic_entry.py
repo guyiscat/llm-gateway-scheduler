@@ -4,14 +4,11 @@ import json
 from pathlib import Path
 import unittest
 
-import pandas as pd
-
-from ..simulation import SimulationRunner, load_config
 from ..simulation.classification import OutputPercentileClassifier
 from ..simulation.models import EndpointView
-from ..simulation.reporting import write_outputs
 from ..simulation.cli import execute
 from ..common.paths import PACKAGE
+from ..common.io import sha256_file
 from ..policies import PercentileReference
 from .support import config, endpoint, req, temporary_directory
 
@@ -65,49 +62,28 @@ class DynamicEntryTests(unittest.TestCase):
                 with self.subTest(i=i), self.assertRaises(ValueError):
                     OutputPercentileClassifier(self.settings(), self.reference(), policy_path=path)
 
-    def test_exported_resources_replay_without_original_policy(self):
-        with temporary_directory() as directory:
-            settings = self.settings(output_percentile_threshold=.75)
-            path = directory / "original_policy.json"
-            path.write_text(json.dumps(self.profile()), encoding="utf-8")
-            policy = OutputPercentileClassifier(settings, self.reference(), policy_path=path)
-            result = SimulationRunner(settings, classification_policy=policy).run([req(0,1,8),req(1,1,8)])
-            output = directory / "exported"
-            write_outputs(result, settings, output)
-            path.unlink()
-            replay_config = load_config(output / "replay_config.json")
-            self.assertEqual(Path(replay_config.output_policy_path), output / "classification_policy.json")
-            reloaded = SimulationRunner(replay_config).run([req(0,1,8),req(1,1,8)])
-            self.assertEqual(result.requests, reloaded.requests)
-            self.assertEqual(result.events, reloaded.events)
-            self.assertEqual(result.batches, reloaded.batches)
-            self.assertEqual(result.endpoints, reloaded.endpoints)
-            self.assertEqual(result.summary, reloaded.summary)
-            trace = pd.read_csv(output / "threshold_trace.csv")
-            self.assertEqual(trace.threshold.tolist(), [.9,.6])
-            self.assertEqual(trace.previous_threshold.iloc[0], .75)
-
-    def test_standard_execute_exports_trace_and_fixed_mode(self):
+    def test_execute_retains_dynamic_and_fixed_classification_without_export(self):
         with temporary_directory() as directory:
             reference = self.reference()
-            initial = self.settings()
-            runner = SimulationRunner(initial, classification_policy=OutputPercentileClassifier(initial, reference))
-            write_outputs(runner.run([]), initial, directory / "resources")
-            settings = load_config(directory / "resources/replay_config.json")
+            artifact = directory / "reference.parquet"
+            metadata = directory / "reference.json"
+            reference.save(artifact)
+            metadata.write_text(json.dumps({"percentile_definition": "empirical_cdf_right",
+                "artifact_sha256": sha256_file(artifact), "reference_sample_count": reference.sample_count}), encoding="utf-8")
+            settings = self.settings(output_reference_path=str(artifact),
+                                     output_reference_metadata_path=str(metadata))
             source = directory / "requests.jsonl"
-            source.write_text(' {"request_id":"a","input_tokens":1,"output_tokens":8}\n'
+            source.write_text('{"request_id":"a","input_tokens":1,"output_tokens":8}\n'
                               '{"request_id":"b","input_tokens":1,"output_tokens":8}\n', encoding="utf-8")
-            result, summary = execute(settings, source=source, source_format="lengths", output=directory / "dynamic")
-            self.assertEqual(summary["threshold_values_used"], [.6,.9])
-            self.assertTrue((directory / "dynamic/threshold_trace.csv").is_file())
-            self.assertIn("classification", summary["provenance"])
+            output = directory / "routes/dynamic.jsonl"
+            result = execute(settings, source=source, source_format="lengths", output=output)
+            self.assertEqual(result.summary["threshold_values_used"], [.6,.9])
+            self.assertEqual([s["threshold"] for s in result.classification_artifacts["trace"]], [.9,.6])
             fixed = replace(settings, output_classification="percentile_fixed", output_percentile_threshold=.8)
-            result, summary = execute(fixed, source=source, source_format="lengths", output=directory / "fixed")
-            self.assertEqual(summary["threshold_values_used"], [.8])
-            self.assertEqual(summary["threshold_update_count"], 0)
-            empty_trace = pd.read_csv(directory / "resources/threshold_trace.csv")
-            self.assertEqual(len(empty_trace), 0)
-            self.assertIn("threshold", empty_trace.columns)
+            result = execute(fixed, source=source, source_format="lengths", output=output.parent / "fixed.jsonl")
+            self.assertEqual(result.summary["threshold_values_used"], [.8])
+            self.assertEqual(result.summary["threshold_update_count"], 0)
+            self.assertEqual({p.name for p in output.parent.iterdir()}, {"dynamic.jsonl", "fixed.jsonl"})
 
     def test_resource_path_validation(self):
         for changes in ({"output_reference_path":"one.parquet"}, {"output_reference_metadata_path":"meta.json"},

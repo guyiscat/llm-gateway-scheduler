@@ -10,7 +10,7 @@ htmlcov/
 # Rebuildable local artifacts and recoverable cleanup backup
 workload_profiling/data/tokenizer/
 workload_profiling/cache/
-workload_profiling/results/simulation/
+workload_profiling/results/
 .checkpoints/
 .DS_Store
 Thumbs.db

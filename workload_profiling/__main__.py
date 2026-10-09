@@ -5,13 +5,12 @@ import sys
 
 
 COMMANDS = {
-    "replay": ("workload_profiling.simulation.cli", "回放请求并导出调度结果"),
-    "web": ("workload_profiling.web.cli", "启动自适应调度控制台"),
+    "replay": ("workload_profiling.simulation.cli", "回放请求并记录 LiteLLM 路由交付参数"),
 }
 
 
 def main():
-    parser = argparse.ArgumentParser(description="大模型请求调度与离线分析")
+    parser = argparse.ArgumentParser(description="Endpoint 调度与本地路由交付记录")
     parser.add_argument("command", choices=COMMANDS,
                         help="；".join(f"{name}: {description}" for name, (_, description) in COMMANDS.items()))
     args = parser.parse_args(sys.argv[1:2])

@@ -83,17 +83,20 @@ class SimulationTests(unittest.TestCase):
             self.assertEqual(len(requests), 1)
             self.assertEqual(requests[0].output_tokens, 1)
 
-    def test_cli_workflow_persists_complete_results(self):
+    def test_cli_workflow_only_persists_dispatched_handoffs(self):
         with temporary_directory() as temporary:
             directory = Path(temporary)
             path = directory/"source.jsonl"
             path.write_text('\n'.join(json.dumps({"input_tokens": n, "output_tokens": 1}) for n in [1, 10, 20])+"\n", encoding="utf-8")
-            result, summary = execute(config(), source=path, source_format="lengths", output=directory/"results")
-            self.assertEqual(summary["completed_requests"], 3)
-            for name in ("requests.csv", "events.jsonl", "endpoints.json", "batches.json", "summary.json", "report.md", "config.json"):
-                self.assertTrue((directory/"results"/name).exists())
-            events = [json.loads(line) for line in (directory/"results/events.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual(sum(e["event"] == "arrived" for e in events), 3)
+            output = directory/"results/routes.jsonl"
+            result = execute(config(), source=path, source_format="lengths", output=output)
+            self.assertEqual(result.summary["completed_requests"], 3)
+            self.assertEqual(list(output.parent.iterdir()), [output])
+            routes = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(routes), 3)
+            for route in routes:
+                self.assertEqual(set(route), {"request_id", "selected_endpoint_id", "dispatched_at_ms", "litellm_params"})
+                self.assertEqual(route["litellm_params"]["metadata"]["force_endpoint"], route["selected_endpoint_id"])
             self.assertEqual(len(result.requests), 3)
 
 

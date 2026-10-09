@@ -89,7 +89,7 @@ def load_tokenizer():
         "content_policy": "Concatenate type=text content parts in source order without inserting separators; null assistant tool-call content becomes empty text in history",
         "template_policy": "Official Qwen template unchanged, including its historical reasoning handling and tool serialization",
         "packages": {name: version(name) for name in (
-            "transformers", "tokenizers", "huggingface-hub", "pandas", "numpy", "pyarrow", "jinja2", "tzdata",
+            "transformers", "tokenizers", "huggingface-hub", "pandas", "numpy", "pyarrow", "jinja2",
         )},
         "production_token_counts": False,
     }

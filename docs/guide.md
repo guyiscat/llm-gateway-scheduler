@@ -13,9 +13,9 @@
 | simulation_adaptive.json | 引用上述两文件；发送时刻、优先级生成、输出预测、SLO、模拟服务时间 |
 | pressure_threshold_policy.json | 输出分类的 pressure_rules 和百分位映射 |
 
-动态 RPM/TPM/并发、健康、失败及冷却只在运行状态中维护，不写回策略文件。结果 `endpoints.json` 展示动态状态，`endpoint_history.json` 展示近期性能。它们与端点静态配置用途不同。
+动态 RPM/TPM/并发、健康、失败及冷却只在运行状态中维护，不写回策略文件。状态及近期性能供路由读取，Python API 可在返回的 RunResult 中检查。
 
-simulation_adaptive.json 中的路径相对自身目录解析。scheduler_config.json 的参考/策略路径相对该文件解析。CLI 路径相对启动目录。旧版包含全部字段的平铺配置及导出的 config.json/replay_config.json 仍可读取；分层配置禁止在模拟文件重复覆盖调度字段，以免两处设置互相矛盾。
+simulation_adaptive.json 中的路径相对自身目录解析。scheduler_config.json 的参考/策略路径相对该文件解析。CLI 路径相对启动目录。包含全部字段的平铺配置仍可读取；分层配置禁止在模拟文件重复覆盖调度字段，以免两处设置互相矛盾。
 
 Python 类预设值是缺省项，文件明确设置的值覆盖它们。独立 SchedulerConfig 默认 tokens 分类，便于核心脱离参考文件运行；项目 scheduler_config.json 明确指定 percentile_dynamic，延续原模拟基线。SimulationConfig 是保留旧 API 的组合配置，scheduler_config() 把其中调度参数投影到核心，不产生第二份动态状态。
 
@@ -24,28 +24,25 @@ Python 类预设值是缺省项，文件明确设置的值覆盖它们。独立 
 从项目根目录运行：
 
 ```powershell
-# 不需要 tokenizer 的已有长度样例
+# 使用本地原始请求试运行前200条
 & .\.venv\Scripts\python.exe -m workload_profiling replay `
-  --source examples/adaptive_requests.jsonl --source-format lengths `
-  --output-dir workload_profiling/results/simulation/adaptive_example
+  --limit 200 --output workload_profiling/results/routes.jsonl
 
 # 默认回放全部原始请求；或 --limit 200
 & .\.venv\Scripts\python.exe -m workload_profiling replay
-& .\.venv\Scripts\python.exe -m workload_profiling web --open
 
-# 新的二档优先级、随机发送、加权排序和固定输出估计
-& .\.venv\Scripts\python.exe -m workload_profiling replay `
-  --source examples/adaptive_requests.jsonl --source-format lengths `
+# 使用原始请求前200条，设置二档优先级、随机发送、加权排序和固定输出估计
+& .\.venv\Scripts\python.exe -m workload_profiling replay --limit 200 `
   --priority-assignment binary --high-priority-ratio 0.1 `
   --arrival-mode random --random-min-interval-ms 1 --random-max-interval-ms 10 `
   --batch-order weighted_length --input-weight 1 --output-weight 2 `
   --prediction-mode fixed --predicted-output-tokens 500 `
-  --output-dir workload_profiling/results/simulation/binary_random
+  --output workload_profiling/results/binary_random.jsonl
 ```
 
 默认原始来源是 3168 条完整 prompt/response。prompt 模式使用固定 Qwen/Qwen3-8B tokenizer，只下载 tokenizer，不下载模型权重；lengths 模式不需 tokenizer。百分位分类读取已有冻结参考。
 
-`--config PATH` 选择模拟配置；`--source`、`--source-format prompt|lengths`、`--output-dir` 更换输入和结果目录。省略 --limit 回放全部；CLI/API limit 必须是正整数，网页的 0 表示全部。`--help` 列出所有参数。
+`--config PATH` 选择模拟配置；`--source`、`--source-format prompt|lengths` 更换输入；`--output PATH.jsonl` 指定路由记录文件。省略 --limit 回放全部；CLI/API limit 必须是正整数。`--help` 列出所有参数。
 
 ## 调度参数
 
@@ -119,12 +116,27 @@ fixed 第 i 条在 i×interval 到达。random 从 0 开始，后续间隔在闭
 
 ECDF 达门槛为输出重型，再与输入重型取 OR。分类在即时到达或窗口释放时冻结，不改变高优先级路径。固定百分位和绝对 tokens 模式保留用于受控验证。
 
-## 网页与结果
+## 本地路由记录
 
-网页保持独立本地回放，支持三种发送、两种新旧优先级分布、内置排序、预测、分类、繁忙和冷却参数；端点组合 JSON 可编辑。未展示的参数仍可通过配置/CLI/Python 修改。网页不导入外部 Python 策略；默认 127.0.0.1:8765，--port 可修改，0 自动分配。
+默认唯一输出为 `workload_profiling/results/routes.jsonl`，UTF-8 JSONL，每行对应一次实际派发，按派发顺序排列。已选择但尚未获准派发、排队和拒绝请求不写入文件。
 
-输出含 config.json、requests.csv、events.jsonl、batches.json、endpoints.json、endpoint_history.json、summary.json、report.md。百分位模式另外输出轨迹、策略/参考快照和独立 replay_config.json。导出完整组合配置便于单文件回放。
+| 字段 | 含义 |
+| --- | --- |
+| request_id | 原请求 ID，便于关联上游 |
+| selected_endpoint_id | 路由最终选择的端点 |
+| dispatched_at_ms | 本次运行时间轴上的派发毫秒，模拟中为虚拟时间 |
+| litellm_params | LiteLLMAdapter.build_params 的调用参数字典 |
 
-CSV 中 priority 是核心0/1，priority_level 是模拟旧档位；predicted_output_tokens 与 actual_output_tokens 分列。scheduling_path、system_busy_at_arrival、busy_endpoints_at_arrival、routing_candidate_ids 可核对路径与候选。即时请求批字段为空。queue_wait_ms = batch_wait_ms + capacity_wait_ms；成功请求 latency_ms = queue_wait_ms + service_ms。端点 ID 数组列使用 JSON。
+调用参数包括 model、messages、stream、metadata，以及请求提供的 max_tokens 和工具/生成控制项；所选端点配置了 api_base 或 deployment_model 时会转换为对应部署参数。记录不包含录制答案、模拟结果或实验报表。lengths 来源若未提供 messages，记录中的消息列表为空，仅适合检验调度；实际交付请求需提供有效消息。
+
+运行过程中逐条写入同目录临时文件，完成模拟并核对输入哈希后一次替换正式文件；异常会清理临时文件并保留原输出。默认每次覆盖，不追加跨次运行记录；需要保留多次记录时为 --output 指定不同文件名。输出路径禁止与输入相同，已存在的同一文件别名也会拒绝。
+
+读取前两条交付记录：
+
+```powershell
+Get-Content -Encoding UTF8 workload_profiling/results/routes.jsonl -TotalCount 2
+```
+
+模拟反馈仍用于释放并发、修正 TPM 和维护历史。RunResult 中的 requests/events/batches/summary 等仅供内存分析，CLI 只打印记录数、路径和拒绝数。配置通过原四份 JSON 或 CLI 修改。
 
 容量等待可超过 max_wait_ms。RPM/TPM 按派发时刻精确满60秒过期；模拟没有新到达也会推进到恢复事件。真实网关需调用 tick 推进定时器，参见开发接口。超出全部兼容端点 TPM 硬上限的请求明确拒绝，CLI 有拒绝时退出码2。失败反馈另计 failed_requests；未知流式指标为 null。

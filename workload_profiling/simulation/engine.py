@@ -25,7 +25,8 @@ class RunResult:
 
 
 class SimulationRunner:
-    def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None, executor=None):
+    def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None,
+                 executor=None, on_route=None):
         self.config = config
         if classification_policy is not None and config.output_classification == "tokens":
             raise ValueError("Injected percentile policy requires percentile output_classification")
@@ -43,6 +44,10 @@ class SimulationRunner:
         if not callable(rank) or inspect.iscoroutinefunction(rank):
             raise TypeError("Batch ordering must implement a synchronous policy")
         self.executor = executor or SimulatedExecutor(config.endpoints)
+        if on_route is not None and (not callable(on_route) or inspect.iscoroutinefunction(on_route)
+                or inspect.iscoroutinefunction(getattr(on_route, "__call__", None))):
+            raise TypeError("on_route must be a synchronous callback")
+        self.on_route = on_route
         self._used = False
 
     def run(self, requests):
@@ -70,6 +75,12 @@ class SimulationRunner:
 
         def dispatched(decision):
             nonlocal sequence
+            if self.on_route is not None:
+                output = self.on_route(decision)
+                if inspect.isawaitable(output):
+                    if inspect.iscoroutine(output):
+                        output.close()
+                    raise TypeError("on_route must not return an awaitable")
             feedback = self.executor.plan(decision, observations[decision.request.request_id])
             plans[decision.request.request_id] = feedback
             sequence += 1

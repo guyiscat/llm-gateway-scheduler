@@ -46,6 +46,14 @@ class CommandEntryTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 2)
             imported.assert_not_called()
 
+    def test_removed_web_command_is_rejected(self):
+        with patch.object(sys, "argv", ["workload_profiling", "web"]), patch.object(
+                project_cli.importlib, "import_module") as imported, redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                project_cli.main()
+            self.assertEqual(error.exception.code, 2)
+            imported.assert_not_called()
+
     def test_real_help_for_all_entrypoints_without_data_loading(self):
         commands = [
             ["-m", "workload_profiling"],

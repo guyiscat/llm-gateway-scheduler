@@ -75,10 +75,10 @@
 <polygon points="1796.00,3580.00 1802.00,3566.00 1790.00,3566.00" fill="#526b7e"/>
 <polyline points="3265.0,3575 3265,3579 2214,3579 2214.2,3580" fill="none" stroke="#9c7bb4" stroke-width="4" stroke-linejoin="round"/>
 <polygon points="2214.20,3580.00 2217.34,3565.10 2205.57,3567.45" fill="#9c7bb4"/>
-<polyline points="1490,3685.0 1410,3685 1410,3692.5 730,3692.5" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polyline points="1490,3380 1410,3380 1410,3692.5 730,3692.5" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
 <polygon points="730.00,3692.50 744.00,3698.50 744.00,3686.50" fill="#526b7e"/>
-<polyline points="930,2694.0 845,2694 845,3743.75 730,3743.75" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
-<polygon points="730.00,3743.75 744.00,3749.75 744.00,3737.75" fill="#526b7e"/>
+<polyline points="2940,660 2845,660 2845,3815 830,3815 830,3743.75 730,3743.75" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="730.00,3743.75 744.00,3749.75 744.00,3737.75" fill="#8c9bab"/>
 <polyline points="2940,388.0 2820,388 2820,590.8 2430,590.8" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
 <polygon points="2430.00,590.80 2444.00,596.80 2444.00,584.80" fill="#8c9bab"/>
 <polyline points="2940,388.0 2820,388 2820,1283.9 2510,1283.9" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
@@ -166,11 +166,12 @@
 <text x="150" y="3444.0" fill="#215547" font-size="25" text-anchor="start">输出：虚拟完成事件 / ExecutionResult</text>
 <text x="150" y="3475.0" fill="#215547" font-size="25" text-anchor="start">默认只生成 E2E，TTFT/TPOT 未模拟</text>
 <rect x="130" y="3590" width="600" height="205" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
-<text x="150" y="3631.7" fill="#215547" font-size="29" text-anchor="start">实验结果与网页展示</text>
+<text x="150" y="3631.7" fill="#215547" font-size="27" text-anchor="start">本地路由交付记录 routes.jsonl</text>
 <path d="M150 3642 H710" stroke="#dbe5ec"/>
-<text x="150" y="3673.0" fill="#215547" font-size="25" text-anchor="start">输入：调度记录 + 事件 + 汇总结果</text>
-<text x="150" y="3704.0" fill="#215547" font-size="25" text-anchor="start">输出：表格、统计报表与导出文件</text>
-<text x="150" y="3735.0" fill="#215547" font-size="25" text-anchor="start">不参与 Endpoint 选择</text>
+<text x="150" y="3673.0" fill="#215547" font-size="23" text-anchor="start">输入：RouteDecision + EndpointConfig</text>
+<text x="150" y="3704.0" fill="#215547" font-size="23" text-anchor="start">转换：LiteLLMAdapter.build_params</text>
+<text x="150" y="3735.0" fill="#215547" font-size="25" text-anchor="start">输出：请求 ID / 端点 / 派发时刻</text>
+<text x="150" y="3766.0" fill="#215547" font-size="25" text-anchor="start">litellm_params；成功后原子发布</text>
 <rect x="1270" y="320" width="1080" height="155" rx="16" fill="#faf5ff" stroke="#a386bb" stroke-width="2" stroke-dasharray="9 6"/>
 <text x="1290" y="361.7" fill="#624982" font-size="29" text-anchor="start">真实网关接入｜可选上游集成</text>
 <path d="M1290 372 H2330" stroke="#dbe5ec"/>
@@ -404,8 +405,8 @@
 <text x="2870" y="3598.3" fill="#82639d" font-size="23" text-anchor="middle">ExecutionResult</text>
 <rect x="152.0" y="3243" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
 <text x="230" y="3268.3" fill="#376a58" font-size="23" text-anchor="middle">独立实际观测</text>
-<rect x="1043.0" y="3668" width="134.0" height="36" rx="5" fill="#f7f9fc"/>
-<text x="1110" y="3693.3" fill="#526b7e" font-size="23" text-anchor="middle">统计 / 记录</text>
+<rect x="1000.0" y="3668" width="220.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1110" y="3693.3" fill="#526b7e" font-size="23" text-anchor="middle">派发 / 交付记录</text>
 <rect x="2579.0" y="668" width="222.0" height="36" rx="5" fill="#f7f9fc"/>
 <text x="2690" y="693.3" fill="#7f93a5" font-size="23" text-anchor="middle">参数/快照/策略读取</text>
 <rect x="130" y="1050" width="600" height="240" rx="14" fill="#ffffff" stroke="#dce5ed" stroke-width="1"/>
