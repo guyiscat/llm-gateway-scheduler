@@ -1,17 +1,16 @@
-"""Virtual-clock simulation: arrivals, batch deadlines, dispatches and completions."""
-from collections import Counter, deque
-from dataclasses import asdict, dataclass
+"""Virtual-clock experiment driver around the same core used by real requests."""
+from collections import Counter
+from dataclasses import asdict, dataclass, field, replace
 import heapq
 import inspect
 
 from ..common.metrics import summarize_ms as statistics
-
-from .models import EndpointState, WorkloadRequest
-from .ordering import load_batch_order, validate_batch_order
+from ..core import Scheduler
+from .ordering import load_batch_order
 from .routing import load_strategy
-from .arrivals import burst_arrival_times
-from .priority import assign_priority
-from .admission import AdmissionPolicy
+from .data_processing import RequestParameterGenerator
+from .request_sender import SimulatedRequestSender
+from .execution import SimulatedExecutor
 
 
 @dataclass
@@ -22,10 +21,11 @@ class RunResult:
     endpoints: list[dict]
     summary: dict
     classification_artifacts: dict | None = None
+    endpoint_history: dict = field(default_factory=dict)
 
 
 class SimulationRunner:
-    def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None):
+    def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None, executor=None):
         self.config = config
         if classification_policy is not None and config.output_classification == "tokens":
             raise ValueError("Injected percentile policy requires percentile output_classification")
@@ -34,14 +34,15 @@ class SimulationRunner:
             from .classification import OutputPercentileClassifier
             self.classification_policy = OutputPercentileClassifier.load_default(config)
         self.strategy = strategy if strategy is not None else load_strategy(config.strategy)
-        if not callable(getattr(self.strategy, "select", None)):
-            raise TypeError("strategy must implement select")
+        selector = getattr(self.strategy, "select_endpoint", None) or getattr(self.strategy, "select", None)
+        if not callable(selector) or inspect.iscoroutinefunction(selector):
+            raise TypeError("Routing must implement a synchronous selector")
         self.batch_order = batch_order if batch_order is not None else load_batch_order(
             config.batch_order, config=config, classification_policy=self.classification_policy)
-        if not callable(getattr(self.batch_order, "order_batch", None)):
-            raise TypeError("batch_order must implement order_batch")
-        if inspect.iscoroutinefunction(self.strategy.select) or inspect.iscoroutinefunction(self.batch_order.order_batch):
-            raise TypeError("Routing and batch ordering must be synchronous")
+        rank = getattr(self.batch_order, "rank_requests", None) or getattr(self.batch_order, "order_batch", None)
+        if not callable(rank) or inspect.iscoroutinefunction(rank):
+            raise TypeError("Batch ordering must implement a synchronous policy")
+        self.executor = executor or SimulatedExecutor(config.endpoints)
         self._used = False
 
     def run(self, requests):
@@ -49,243 +50,112 @@ class SimulationRunner:
             raise RuntimeError("Create a new SimulationRunner for each replay")
         self._used = True
         config = self.config
-        admission = AdmissionPolicy(config)
-        endpoints = [EndpointState(e) for e in config.endpoints]
-        by_id = {e.config.endpoint_id: e for e in endpoints}
-        arrival_times = None
-        if config.arrival_mode == "burst":
-            requests = tuple(requests)
-            arrival_times = burst_arrival_times(len(requests), config)
-        source = iter(requests)
-        rows, events, batches = [], [], []
-        pending, ready, running = deque(), deque(), []
-        urgent, immediate = deque(), deque()
-        seen = set()
-        next_arrival, now, sequence = 0, 0, 0
-        last_load_key = None
-        capacity_epoch = 0
-        failed_attempts = {}
+        generator = RequestParameterGenerator(config)
+        sender = SimulatedRequestSender(config)
+        scheduled = iter(sender.schedule(requests))
+        observations, plans, running, events = {}, {}, [], []
+        sequence = 0
 
-        def event(kind, **fields):
-            events.append({"time_ms": now, "event": kind, **fields})
+        class RankingAdapter:
+            def order_batch(adapter_self, core_requests, endpoints, now_ms):
+                legacy_order = getattr(self.batch_order, "order_batch", None)
+                if callable(legacy_order):
+                    # Preserve four-level ordering only in recorded simulation;
+                    # every output length exposed to ranking is still an estimate.
+                    legacy_requests = tuple(replace(observations[r.request_id], output_tokens=r.predicted_output_tokens)
+                                            for r in core_requests)
+                    return legacy_order(legacy_requests, endpoints, now_ms)
+                rank = getattr(self.batch_order, "rank_requests", None)
+                return [r.request_id for r in rank(core_requests, {"endpoints": endpoints, "now_ms": now_ms})]
 
-        def endpoint_views():
-            return tuple(endpoint.view(now, config.window_ms) for endpoint in endpoints)
-
-        def observe_load():
-            nonlocal last_load_key
-            load = admission.load_monitor.snapshot(endpoint_views())
-            key = tuple((e.endpoint_id, e.busy, e.reasons) for e in load.endpoints)
-            if key != last_load_key:
-                event("load_changed", **load.record())
-                last_load_key = key
-            return load
-
-        def classify(members, views, batch_id, context):
-            if self.classification_policy is None:
-                return None
-            requests = tuple(request for request, _ in members)
-            decisions, snapshot = self.classification_policy.classify_batch(
-                requests, views, len(ready) + len(urgent) + len(immediate), now, batch_id)
-            if set(decisions) != {r.request_id for r in requests}:
-                raise ValueError("Classifier must classify every request")
-            for request, row in members:
-                row.update(decisions[request.request_id])
-            snapshot["classification_context"] = context
-            event("classification_updated", **snapshot)
-            return snapshot
-
-        def release(reason):
-            if not pending:
-                return
-            batch_id = len(batches)
-            members = list(pending)
-            requests = tuple(request for request, _ in members)
-            views = endpoint_views()
-            classification_snapshot = classify(members, views, batch_id, "window")
-            ordered_ids = validate_batch_order(requests, self.batch_order.order_batch(requests, views, now))
-            members_by_id = {request.request_id: (request, row) for request, row in members}
-            pending.clear()
-            batch = {"batch_id": batch_id, "trigger": reason, "released_at_ms": now,
-                     "size": len(members), "request_ids": [r[0].request_id for r in members],
-                     "dispatch_order": list(ordered_ids)}
-            batches.append(batch)
-            if classification_snapshot is not None:
-                batch["classification"] = classification_snapshot
-            event("batch_released", **batch)
-            for position, request_id in enumerate(ordered_ids):
-                request, row = members_by_id[request_id]
-                row.update(batch_id=batch_id, batch_position=position, batch_trigger=reason, batch_released_at_ms=now,
-                           batch_wait_ms=now - row["arrival_at_ms"])
-                ready.append((request, row))
-
-        def try_dispatch(request, row):
-            nonlocal sequence, capacity_epoch
-            if failed_attempts.get(request.request_id) == capacity_epoch:
-                return False
-            capacity_ready_at = (row["batch_released_at_ms"] if row["batch_released_at_ms"] is not None
-                                 else row["arrival_at_ms"])
-            # Physical simulation capacity is independent of future eligibility filters.
-            if all(request.total_tokens > e.config.tpm_limit for e in endpoints):
-                row.update(status="rejected", rejection_reason="tokens_exceed_every_endpoint_tpm_limit",
-                           finished_at_ms=now, capacity_wait_ms=now-capacity_ready_at,
-                           queue_wait_ms=now-row["arrival_at_ms"], latency_ms=now-row["arrival_at_ms"])
-                event("rejected", request_id=request.request_id, reason=row["rejection_reason"])
-                failed_attempts.pop(request.request_id, None)
-                return True
-            views = endpoint_views()
-            eligible = admission.routing_endpoints(views, row["endpoint_scope"])
-            candidates = tuple(view for view in eligible if view.can_accept(request))
-            if not candidates:
-                details = {"endpoint_scope": row["endpoint_scope"],
-                           "eligible_endpoint_ids": [view.endpoint_id for view in eligible]}
-                event("capacity_wait", request_id=request.request_id, **details)
-                failed_attempts[request.request_id] = capacity_epoch
-                return False
-            selected = self.strategy.select(request, candidates, now)
-            if not isinstance(selected, str) or selected not in {v.endpoint_id for v in candidates}:
-                raise ValueError("Routing strategy selected an unavailable or unknown endpoint")
-            view = next(v for v in candidates if v.endpoint_id == selected)
-            endpoint = by_id[selected]
-            finished = endpoint.dispatch(request, now, config.window_ms)
-            capacity_epoch += 1
-            failed_attempts.pop(request.request_id, None)
-            row.update(endpoint_id=selected, dispatch_at_ms=now, finished_at_ms=finished,
-                       service_ms=finished-now, queue_wait_ms=now-row["arrival_at_ms"],
-                       capacity_wait_ms=now-capacity_ready_at, latency_ms=finished-row["arrival_at_ms"],
-                       status="running", endpoint_rpm_before=view.requests_in_window,
-                       endpoint_tpm_before=view.tokens_in_window, endpoint_concurrency_before=view.concurrency,
-                       rpm_utilization_before=view.rpm_utilization, tpm_utilization_before=view.tpm_utilization,
-                       concurrency_utilization_before=view.concurrency_utilization)
-            row["routing_candidate_ids"] = [v.endpoint_id for v in candidates]
+        def dispatched(decision):
+            nonlocal sequence
+            feedback = self.executor.plan(decision, observations[decision.request.request_id])
+            plans[decision.request.request_id] = feedback
             sequence += 1
-            heapq.heappush(running, (finished, sequence, selected, row))
-            details = {"scheduling_path": row["scheduling_path"], "priority_level": request.priority_level}
-            event("dispatched", request_id=request.request_id, endpoint_id=selected,
-                  batch_id=row["batch_id"], batch_position=row["batch_position"], finished_at_ms=finished,
-                  endpoint_state_after=asdict(endpoint.view(now, config.window_ms)), **details)
-            observe_load()
-            return True
+            heapq.heappush(running, (feedback.finished_at_ms, sequence, feedback))
 
-        def drain(include_window=True):
-            # A blocked immediate request cannot prevent a feasible later one.
-            # Priority 4 gets first opportunity at every capacity event; no preemption.
-            for queue in (urgent, immediate):
-                for _ in range(len(queue)):
-                    request, row = queue.popleft()
-                    if not try_dispatch(request, row):
-                        queue.append((request, row))
-            if include_window:
-                while ready:
-                    if not try_dispatch(*ready[0]):
-                        break
-                    ready.popleft()
+        def record_event(event):
+            event = dict(event)
+            request_id = event.get("request_id")
+            if "priority" in event:
+                event["priority_level"] = observations[request_id].priority_level
+            if event["event"] == "dispatched":
+                event["finished_at_ms"] = plans[request_id].finished_at_ms
+            events.append(event)
 
-        while next_arrival is not None or pending or ready or urgent or immediate or running:
+        scheduler = Scheduler(tuple(e.to_core() for e in config.endpoints), config.scheduler_config(),
+                              routing_policy=self.strategy, ranking_policy=RankingAdapter(),
+                              classifier=self.classification_policy, on_dispatch=dispatched, on_event=record_event)
+        item = next(scheduled, None)
+        next_arrival = item[0] if item is not None else 0
+        now = 0
+        while next_arrival is not None or scheduler.has_waiting or running:
             times = []
             if next_arrival is not None:
                 times.append(next_arrival)
-            if pending:
-                times.append(pending[0][1]["arrival_at_ms"] + config.batch_wait_ms)
             if running:
                 times.append(running[0][0])
-            if ready or urgent or immediate:
-                for endpoint in endpoints:
-                    expiry = endpoint.next_expiry(config.window_ms)
-                    if expiry is not None:
-                        times.append(expiry)
+            if scheduler.next_wakeup_ms is not None:
+                times.append(scheduler.next_wakeup_ms)
             if not times:
-                raise RuntimeError("Queued requests have no future capacity event")
+                scheduler.reject_waiting()
+                break
             now = min(times)
-            for endpoint in endpoints:
-                previous_count = len(endpoint.window)
-                endpoint.expire(now, config.window_ms)
-                if len(endpoint.window) != previous_count:
-                    capacity_epoch += 1
-            # Deterministic same-time order: completion, arrival, timeout, dispatch.
+            scheduler.advance_to(now, observe=False)
             while running and running[0][0] <= now:
-                _, _, endpoint_id, row = heapq.heappop(running)
-                by_id[endpoint_id].complete()
-                capacity_epoch += 1
-                row["status"] = "completed"
-                event("completed", request_id=row["request_id"], endpoint_id=endpoint_id,
-                      concurrency_after=by_id[endpoint_id].concurrency)
-            observe_load()
+                _, _, feedback = heapq.heappop(running)
+                scheduler.accept_feedback(feedback, drain=False)
+            scheduler.observe_load()
             while next_arrival == now:
-                try:
-                    request = next(source)
-                except StopIteration:
+                if item is None:
                     next_arrival = None
-                    release("end_of_input")
+                    scheduler.flush()
                 else:
-                    if not isinstance(request, WorkloadRequest):
-                        raise TypeError("Replay expects WorkloadRequest objects")
-                    request = assign_priority(request, config)
-                    if request.request_id in seen:
-                        raise ValueError(f"Duplicate request_id: {request.request_id}")
-                    seen.add(request.request_id)
-                    input_heavy = request.input_tokens >= config.input_threshold_tokens
-                    output_heavy = request.output_tokens >= config.output_threshold_tokens
-                    heavy = input_heavy or output_heavy
-                    request_fields = asdict(request)
-                    row = {**request_fields, "total_tokens": request.total_tokens,
-                           "arrival_at_ms": now, "input_heavy": input_heavy,
-                           "output_heavy": output_heavy, "heavy": heavy,
-                           "batch_id": None, "batch_position": None, "batch_trigger": None, "batch_released_at_ms": None,
-                           "batch_wait_ms": 0, "capacity_wait_ms": 0, "queue_wait_ms": 0,
-                           "endpoint_id": None, "dispatch_at_ms": None, "finished_at_ms": None,
-                           "service_ms": 0, "latency_ms": 0, "status": "queued", "rejection_reason": None,
-                           "endpoint_rpm_before": None, "endpoint_tpm_before": None,
-                           "endpoint_concurrency_before": None, "rpm_utilization_before": None,
-                           "tpm_utilization_before": None, "concurrency_utilization_before": None}
-                    rows.append(row)
-                    if self.classification_policy is not None:
-                        row.update(output_heavy=None, heavy=None,
-                                   output_percentile=None, output_percentile_threshold=None, output_token_cutoff=None,
-                                   threshold_source=None, pressure_level=None, classified_at_ms=None)
-                    event("arrived", request_id=request.request_id, heavy=heavy)
-                    if self.classification_policy is not None:
-                        events[-1]["heavy"] = None
-                        events[-1]["classification_pending"] = True
-                    load = observe_load()
-                    decision = admission.decide(request, load)
-                    row.update(scheduling_path=decision.scheduling_path, endpoint_scope=decision.endpoint_scope,
-                               system_busy_at_arrival=load.busy,
-                               busy_endpoints_at_arrival=[e.endpoint_id for e in load.endpoints if e.busy],
-                               routing_candidate_ids=[])
-                    event("admission_decided", request_id=request.request_id, priority_level=request.priority_level,
-                          scheduling_path=decision.scheduling_path, endpoint_scope=decision.endpoint_scope,
-                          **load.record())
-                    if decision.scheduling_path == "busy_window":
-                        pending.append((request, row))
-                        if len(pending) >= config.batch_size:
-                            release("batch_size")
-                    else:
-                        classify(((request, row),), endpoint_views(), None, "immediate")
-                        queue = urgent if request.priority_level == 4 else immediate
-                        queue.append((request, row))
-                        drain(include_window=False)
-                    if arrival_times is None:
-                        next_arrival += config.arrival_interval_ms
-                    elif len(rows) < len(arrival_times):
-                        next_arrival = arrival_times[len(rows)]
-                    else:
-                        # Same EOF convention as fixed mode: one nominal interval later.
-                        next_arrival = now + config.arrival_interval_ms
-            if pending and pending[0][1]["arrival_at_ms"] + config.batch_wait_ms <= now:
-                release("timeout")
-            drain()
+                    prepared = generator.prepare(item[1], now)
+                    observations[prepared.request.request_id] = prepared.observation
+                    sender.submit(prepared.request, scheduler)
+                    item = next(scheduled, None)
+                    next_arrival = item[0] if item is not None else now + config.arrival_interval_ms
+            scheduler.tick(now)
 
-        states = []
-        for endpoint in endpoints:
-            view = endpoint.view(now, config.window_ms)
-            states.append({**asdict(view), "rpm_utilization": view.rpm_utilization,
-                           "tpm_utilization": view.tpm_utilization,
-                           "concurrency_utilization": view.concurrency_utilization,
-                           "total_requests": endpoint.total_requests, "total_tokens": endpoint.total_tokens,
-                           "peak_concurrency": endpoint.peak_concurrency,
-                           "peak_requests_in_window": endpoint.peak_requests_in_window,
-                           "peak_tokens_in_window": endpoint.peak_tokens_in_window})
+        rows = []
+        for request_id, record in scheduler.records.items():
+            observation = observations[request_id]
+            request, decision, feedback = record.request, record.decision, record.result
+            ready_at = record.batch_released_at_ms if record.batch_released_at_ms is not None else request.arrival_time
+            dispatch_at = decision.dispatched_at_ms if decision is not None else None
+            finished_at = feedback.finished_at_ms if feedback is not None else record.rejected_at_ms
+            view = record.endpoint_before
+            row = {name: getattr(observation, name) for name in (
+                "request_id", "input_tokens", "output_tokens", "source_line", "priority_level", "priority_level_source")}
+            row.update(total_tokens=observation.total_tokens, priority=request.priority,
+                       target_model=request.target_model, stream=request.stream,
+                       predicted_output_tokens=request.predicted_output_tokens,
+                       actual_input_tokens=feedback.actual_input_tokens if feedback else None,
+                       actual_output_tokens=feedback.actual_output_tokens if feedback else None,
+                       reserved_tokens=request.total_tokens, arrival_at_ms=request.arrival_time,
+                       **record.classification)
+            row.update(batch_id=record.batch_id, batch_position=record.batch_position, batch_trigger=record.batch_trigger,
+                batch_released_at_ms=record.batch_released_at_ms, batch_wait_ms=ready_at-request.arrival_time,
+                capacity_wait_ms=(dispatch_at if dispatch_at is not None else finished_at)-ready_at,
+                queue_wait_ms=(dispatch_at if dispatch_at is not None else finished_at)-request.arrival_time,
+                endpoint_id=decision.selected_endpoint_id if decision else None, dispatch_at_ms=dispatch_at,
+                finished_at_ms=finished_at, service_ms=finished_at-dispatch_at if dispatch_at is not None else 0,
+                latency_ms=finished_at-request.arrival_time, status=record.status, rejection_reason=record.rejection_reason,
+                endpoint_rpm_before=view.requests_in_window if view else None,
+                endpoint_tpm_before=view.tokens_in_window if view else None,
+                endpoint_concurrency_before=view.concurrency if view else None,
+                rpm_utilization_before=view.rpm_utilization if view else None,
+                tpm_utilization_before=view.tpm_utilization if view else None,
+                concurrency_utilization_before=view.concurrency_utilization if view else None,
+                scheduling_path=record.scheduling_path, endpoint_scope=record.endpoint_scope,
+                system_busy_at_arrival=record.system_busy_at_arrival,
+                busy_endpoints_at_arrival=list(record.busy_endpoints_at_arrival),
+                routing_candidate_ids=list(decision.candidate_ids) if decision else [])
+            rows.append(row)
+        batches = scheduler.batches
+        states = scheduler.states.export(now)
         heavy_rows = [r for r in rows if r["heavy"]]
         completed_heavy = [r for r in heavy_rows if r["status"] == "completed"]
         completed = [r for r in rows if r["status"] == "completed"]
@@ -322,6 +192,10 @@ class SimulationRunner:
                        scheduling_paths=dict(Counter(row["scheduling_path"] for row in rows)),
                        busy_thresholds={"rpm": config.busy_rpm_threshold, "tpm": config.busy_tpm_threshold,
                                         "concurrency_reserve": config.busy_concurrency_reserve})
+        summary["priority_counts"] = {str(p): sum(r["priority"] == p for r in rows) for p in (0, 1)}
+        summary["failed_requests"] = sum(r["status"] == "failed" for r in rows)
+        if config.busy_concurrency_threshold is not None:
+            summary["busy_thresholds"]["concurrency_fraction"] = config.busy_concurrency_threshold
         summary["priority_levels"] = {}
         for level in range(1, 5):
             members = [row for row in rows if row["priority_level"] == level]
@@ -336,4 +210,6 @@ class SimulationRunner:
             summary["threshold_update_count"] = sum(s["threshold_changed"] for s in self.classification_policy.trace)
             summary["threshold_values_used"] = sorted({s["threshold"] for s in self.classification_policy.trace})
         artifacts = self.classification_policy.artifacts() if self.classification_policy is not None else None
-        return RunResult(rows, events, batches, states, summary, artifacts)
+        history = {key: asdict(value) for key, value in scheduler.states.history.snapshot(
+            scheduler.states.configs, now).items()}
+        return RunResult(rows, events, batches, states, summary, artifacts, history)

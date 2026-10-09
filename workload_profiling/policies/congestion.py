@@ -1,4 +1,4 @@
-"""拥塞状态提供接口。当前不估计 RPM/TPM/Concurrency，也不处理 hysteresis。"""
+"""Output-classification pressure levels, distinct from system busy admission."""
 from enum import Enum
 
 

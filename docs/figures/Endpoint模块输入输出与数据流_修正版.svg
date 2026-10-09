@@ -1,0 +1,442 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3720" height="3940" viewBox="0 0 3720 3940">
+<title>Endpoint 调度器：模块输入输出与数据流（修正版）</title>
+<desc>依据当前代码。默认模拟与可选真实执行共享核心调度；显示候选池分层、冻结分类、派发预留和反馈唤醒。</desc>
+<style>text{font-family:"Microsoft YaHei",sans-serif}</style>
+<rect width="100%" height="100%" fill="white"/>
+<text x="1860.0" y="79.6" fill="#1e334b" font-size="49" text-anchor="middle">Endpoint 调度器 · 模块输入输出与数据流</text>
+<text x="1860.0" y="137.1" fill="#61758b" font-size="28" text-anchor="middle">依据当前代码｜默认模拟与可选真实接入共用核心｜分层候选池 · 冻结分类 · 派发预留 · 反馈唤醒</text>
+<rect x="60" y="185" width="740" height="3625" rx="19" fill="#f7f9fc" stroke="#dce5ee" stroke-width="2"/>
+<text x="88" y="235.5" fill="#273d53" font-size="31" text-anchor="start">输入、模拟与辅助功能</text>
+<text x="88" y="278.2" fill="#728499" font-size="23" text-anchor="start">不参与核心端点选择；实际观测独立传递</text>
+<path d="M88 296 H772" stroke="#dce5ee" stroke-width="2"/>
+<rect x="850" y="185" width="1970" height="3625" rx="19" fill="#f7f9fc" stroke="#dce5ee" stroke-width="2"/>
+<text x="878" y="235.5" fill="#273d53" font-size="31" text-anchor="start">共享核心调度主线</text>
+<text x="878" y="278.2" fill="#728499" font-size="23" text-anchor="start">Scheduler 串行编排；三条路径共用派发入口</text>
+<path d="M878 296 H2792" stroke="#dce5ee" stroke-width="2"/>
+<rect x="2870" y="185" width="770" height="3625" rx="19" fill="#f7f9fc" stroke="#dce5ee" stroke-width="2"/>
+<text x="2898" y="235.5" fill="#273d53" font-size="31" text-anchor="start">配置、共享状态与策略</text>
+<text x="2898" y="278.2" fill="#728499" font-size="23" text-anchor="start">只读快照与独立策略；蓝色连线更新状态</text>
+<path d="M2898 296 H3612" stroke="#dce5ee" stroke-width="2"/>
+<polyline points="430.0,550 430.0,670" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="430.00,670.00 436.00,656.00 424.00,656.00" fill="#526b7e"/>
+<polyline points="130,473.0 92,473 92,3447.5 130,3447.5" fill="none" stroke="#438b77" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="130.00,3447.50 116.00,3441.50 116.00,3453.50" fill="#438b77"/>
+<polyline points="730,760.0 825,760 825,602.5 1330,610.0" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1330.00,610.00 1316.09,603.79 1315.91,615.79" fill="#526b7e"/>
+<polyline points="1810.0,475 1810,503 1880,503 1880.0,530" fill="none" stroke="#9c7bb4" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1880.00,530.00 1886.00,516.00 1874.00,516.00" fill="#9c7bb4"/>
+<polyline points="1880.0,690 1880.0,735" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1880.00,735.00 1886.00,721.00 1874.00,721.00" fill="#526b7e"/>
+<polyline points="1330,820.075 900,820 900,2562 930,2562.0" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="930.00,2562.00 916.00,2556.00 916.00,2568.00" fill="#526b7e"/>
+<polyline points="1880.0,940 1880,973 1750,973 1750.0,1000" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1750.00,1000.00 1756.00,986.00 1744.00,986.00" fill="#526b7e"/>
+<polyline points="1450,1077.5 1240,1077.5 1240,1110 1240.0,1140" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1240.00,1140.00 1246.00,1126.00 1234.00,1126.00" fill="#526b7e"/>
+<polyline points="1750.0,1155 1750,1193 2070,1193 2070.0,1230" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2070.00,1230.00 2076.00,1216.00 2064.00,1216.00" fill="#526b7e"/>
+<polyline points="1630,1352.5 1580,1352.5 1580,1360 1240,1360 1240.0,1390" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1240.00,1390.00 1246.00,1376.00 1234.00,1376.00" fill="#526b7e"/>
+<polyline points="2070.0,1475 2070,1507 2085,1507 2085.0,1530" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2085.00,1530.00 2091.00,1516.00 2079.00,1516.00" fill="#526b7e"/>
+<polyline points="960,1230.0 920,1230 920,1720 960,1720.0" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="960.00,1720.00 946.00,1714.00 946.00,1726.00" fill="#526b7e"/>
+<polyline points="1240.0,1560 1240.0,1630" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1240.00,1630.00 1246.00,1616.00 1234.00,1616.00" fill="#526b7e"/>
+<polyline points="1240.0,1810 1240,2350 1330,2350.0" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1330.00,2350.00 1316.00,2344.00 1316.00,2356.00" fill="#526b7e"/>
+<polyline points="2085.0,1710 2085.0,1780" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2085.00,1780.00 2091.00,1766.00 2079.00,1766.00" fill="#526b7e"/>
+<polyline points="2085.0,1950 2085.0,2005" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2085.00,2005.00 2091.00,1991.00 2079.00,1991.00" fill="#526b7e"/>
+<polyline points="2085.0,2175 2085,2215 1920,2215 1920.0,2250" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1920.00,2250.00 1926.00,2236.00 1914.00,2236.00" fill="#526b7e"/>
+<polyline points="1920.0,2450 1920,2470 1965,2470 1965.0,2490" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1965.00,2490.00 1971.00,2476.00 1959.00,2476.00" fill="#526b7e"/>
+<polyline points="1420,2572.25 1360,2572.25 1310,2572.32" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1310.00,2572.32 1324.01,2578.30 1323.99,2566.30" fill="#526b7e"/>
+<polyline points="1420,2666.25 1365,2666.25 1365,2895.8 1310,2895.8" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1310.00,2895.80 1324.00,2901.80 1324.00,2889.80" fill="#526b7e"/>
+<polyline points="930,2940.0 875,2940 875,2410 1330,2410.0" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="1330.00,2410.00 1316.00,2404.00 1316.00,2416.00" fill="#4b8ebc"/>
+<polyline points="1965.0,2725 1965,2756 2000,2756 2000.0,2790" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2000.00,2790.00 2006.00,2776.00 1994.00,2776.00" fill="#526b7e"/>
+<polyline points="2000.0,2990 2000.0,3070" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2000.00,3070.00 2006.00,3056.00 1994.00,3056.00" fill="#526b7e"/>
+<polyline points="2000.0,3240 2000.0,3300" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2000.00,3300.00 2006.00,3286.00 1994.00,3286.00" fill="#526b7e"/>
+<polyline points="1490,3380.0 1425,3380 1425,3447.5 730,3447.5" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="730.00,3447.50 744.00,3453.50 744.00,3441.50" fill="#526b7e"/>
+<polyline points="2510,3380.0 2760,3380 2760,3438 2940,3438.045" fill="none" stroke="#9c7bb4" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2940.00,3438.05 2926.00,3432.04 2926.00,3444.04" fill="#9c7bb4"/>
+<polyline points="430.0,3085 430.0,3330" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="430.00,3330.00 436.00,3316.00 424.00,3316.00" fill="#8c9bab"/>
+<polyline points="430.0,3565 430,3578 1796,3578 1796.0,3580" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="1796.00,3580.00 1802.00,3566.00 1790.00,3566.00" fill="#526b7e"/>
+<polyline points="3265.0,3575 3265,3579 2214,3579 2214.2,3580" fill="none" stroke="#9c7bb4" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="2214.20,3580.00 2217.34,3565.10 2205.57,3567.45" fill="#9c7bb4"/>
+<polyline points="1490,3685.0 1410,3685 1410,3692.5 730,3692.5" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="730.00,3692.50 744.00,3698.50 744.00,3686.50" fill="#526b7e"/>
+<polyline points="930,2694.0 845,2694 845,3743.75 730,3743.75" fill="none" stroke="#526b7e" stroke-width="4" stroke-linejoin="round"/>
+<polygon points="730.00,3743.75 744.00,3749.75 744.00,3737.75" fill="#526b7e"/>
+<polyline points="2940,388.0 2820,388 2820,590.8 2430,590.8" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2430.00,590.80 2444.00,596.80 2444.00,584.80" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388 2820,1283.9 2510,1283.9" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,1283.90 2524.00,1289.90 2524.00,1277.90" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388 2820,1566.0 2510,1566.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,1566.00 2524.00,1572.00 2524.00,1560.00" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388.0 2820,1516.0 2940,1516.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,1516.00 2926.00,1510.00 2926.00,1522.00" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388.0 2820,1955.0 2940,1955.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,1955.00 2926.00,1949.00 2926.00,1961.00" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388.0 2820,2693.0 2940,2693.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,2693.00 2926.00,2687.00 2926.00,2699.00" fill="#8c9bab"/>
+<polyline points="2940,388.0 2820,388.0 2820,904.0 2940,904.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,904.00 2926.00,898.00 2926.00,910.00" fill="#8c9bab"/>
+<polyline points="3265.0,750 3265.0,850" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3265.00,850.00 3271.00,836.00 3259.00,836.00" fill="#8c9bab"/>
+<polyline points="2940,660.0 2770,660 2770,806.75 2430,806.75" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2430.00,806.75 2444.00,812.75 2444.00,800.75" fill="#8c9bab"/>
+<polyline points="3590,660.0 3620,660 3620,3388.8 3590,3388.8" fill="none" stroke="#9c7bb4" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,3388.80 3604.00,3394.80 3604.00,3382.80" fill="#9c7bb4"/>
+<polyline points="2940,985.0 2720,985 2720,878.5 2430,878.5" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2430.00,878.50 2444.00,884.50 2444.00,872.50" fill="#8c9bab"/>
+<polyline points="2940,985.0 2720,985 2720,1418.65 2510,1418.65" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,1418.65 2524.00,1424.65 2524.00,1412.65" fill="#8c9bab"/>
+<polyline points="2940,985.0 2720,985 2720,2572.25 2510,2572.25" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2572.25 2524.00,2578.25 2524.00,2566.25" fill="#8c9bab"/>
+<polyline points="2940,985.0 2720,985 2720,2854.0 2510,2854.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2854.00 2524.00,2860.00 2524.00,2848.00" fill="#8c9bab"/>
+<polyline points="3265.0,1395 3265.0,1460" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3265.00,1460.00 3271.00,1446.00 3259.00,1446.00" fill="#8c9bab"/>
+<polyline points="3590,1066.0 3630,1066 3630,1530 3590,1530.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,1530.00 3604.00,1536.00 3604.00,1524.00" fill="#8c9bab"/>
+<polyline points="2510,2290.0 2630,2290 2630,1670 2940,1670.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,1670.00 2926.00,1664.00 2926.00,1676.00" fill="#8c9bab"/>
+<polyline points="2940,1633.6 2790,1633.6 2790,1968 1585,1968 1585,1756 1520,1756.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="1520.00,1756.00 1534.00,1762.00 1534.00,1750.00" fill="#8c9bab"/>
+<polyline points="2940,1566.4 2765,1566.4 2765,1865 2510,1865.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,1865.00 2524.00,1871.00 2524.00,1859.00" fill="#8c9bab"/>
+<polyline points="2940,2022.5 2710,2022.5 2710,2090 2510,2090.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2090.00 2524.00,2096.00 2524.00,2084.00" fill="#8c9bab"/>
+<polyline points="2940,2397.5 2680,2397.5 2680,2900 2510,2900.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2900.00 2524.00,2906.00 2524.00,2894.00" fill="#8c9bab"/>
+<polyline points="2940,2757.5 2710,2757.5 2710,2940 2510,2940.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2940.00 2524.00,2946.00 2524.00,2934.00" fill="#8c9bab"/>
+<polyline points="2510,3155.0 2800,3155 2800,1066 2940,1066.0" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,1066.00 2926.00,1060.00 2926.00,1072.00" fill="#4b8ebc"/>
+<polyline points="2510,3651.4 3680,3651.4 3680,944.5 3590,944.5" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,944.50 3604.00,950.50 3604.00,938.50" fill="#4b8ebc"/>
+<polyline points="2510,3716.5 3650,3716.5 3650,2397.5 3590,2397.5" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,2397.50 3604.00,2403.50 3604.00,2391.50" fill="#4b8ebc"/>
+<polyline points="2510,3752.2 2750,3752.2 2750,3156.4 2940,3156.4" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,3156.40 2926.00,3150.40 2926.00,3162.40" fill="#4b8ebc"/>
+<polyline points="3590,998.5 3640,998.5 3640,3057.5 3590,3057.5" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,3057.50 3604.00,3063.50 3604.00,3051.50" fill="#8c9bab"/>
+<polyline points="2510,1593.0 2660,1593 2660,3046 2940,3046.0" fill="none" stroke="#8c9bab" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2940.00,3046.00 2926.00,3040.00 2926.00,3052.00" fill="#8c9bab"/>
+<polyline points="3590,3195.5 3665,3195.5 3665,1039 3590,1039.0" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="3590.00,1039.00 3604.00,1045.00 3604.00,1033.00" fill="#4b8ebc"/>
+<polyline points="2940,3172.5 2838,3172.5 2838,1665 2510,1665.0" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,1665.00 2524.00,1671.00 2524.00,1659.00" fill="#4b8ebc"/>
+<polyline points="2940,3103.5 2778,3103.5 2778,2410 2510,2410.0" fill="none" stroke="#4b8ebc" stroke-width="3" stroke-linejoin="round" stroke-dasharray="9 6"/>
+<polygon points="2510.00,2410.00 2524.00,2416.00 2524.00,2404.00" fill="#4b8ebc"/>
+<rect x="130" y="330" width="600" height="220" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
+<text x="150" y="371.7" fill="#215547" font-size="29" text-anchor="start">数据处理与参数计算</text>
+<path d="M150 382 H710" stroke="#dbe5ec"/>
+<text x="150" y="413.0" fill="#215547" font-size="25" text-anchor="start">输入：数据集 + 模拟配置</text>
+<text x="150" y="444.0" fill="#215547" font-size="25" text-anchor="start">输出：SchedulerRequest + 独立实际观测</text>
+<text x="150" y="475.0" fill="#215547" font-size="25" text-anchor="start">预测用于调度；实际观测用于模拟执行</text>
+<rect x="130" y="670" width="600" height="180" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
+<text x="150" y="711.7" fill="#215547" font-size="29" text-anchor="start">模拟请求发送</text>
+<path d="M150 722 H710" stroke="#dbe5ec"/>
+<text x="150" y="753.0" fill="#215547" font-size="25" text-anchor="start">输入：标准请求 + 到达模式/频率</text>
+<text x="150" y="784.0" fill="#215547" font-size="25" text-anchor="start">输出：按到达时刻调用 submit_request</text>
+<text x="150" y="815.0" fill="#215547" font-size="25" text-anchor="start">fixed / random / burst</text>
+<rect x="130" y="2870" width="600" height="215" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
+<text x="150" y="2911.7" fill="#215547" font-size="29" text-anchor="start">模拟服务参数</text>
+<path d="M150 2922 H710" stroke="#dbe5ec"/>
+<text x="150" y="2953.0" fill="#215547" font-size="25" text-anchor="start">输入：simulation_adaptive.json</text>
+<text x="150" y="2984.0" fill="#215547" font-size="25" text-anchor="start">输出：延迟、吞吐与可选抖动参数</text>
+<text x="150" y="3015.0" fill="#215547" font-size="25" text-anchor="start">不属于 Endpoint 的调度容量配置</text>
+<rect x="130" y="3330" width="600" height="235" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
+<text x="150" y="3371.7" fill="#215547" font-size="29" text-anchor="start">模拟执行器｜默认执行路径</text>
+<path d="M150 3382 H710" stroke="#dbe5ec"/>
+<text x="150" y="3413.0" fill="#215547" font-size="25" text-anchor="start">输入：RouteDecision + 实际观测 + 服务参数</text>
+<text x="150" y="3444.0" fill="#215547" font-size="25" text-anchor="start">输出：虚拟完成事件 / ExecutionResult</text>
+<text x="150" y="3475.0" fill="#215547" font-size="25" text-anchor="start">默认只生成 E2E，TTFT/TPOT 未模拟</text>
+<rect x="130" y="3590" width="600" height="205" rx="16" fill="#f2faf6" stroke="#76a18f" stroke-width="2"/>
+<text x="150" y="3631.7" fill="#215547" font-size="29" text-anchor="start">实验结果与网页展示</text>
+<path d="M150 3642 H710" stroke="#dbe5ec"/>
+<text x="150" y="3673.0" fill="#215547" font-size="25" text-anchor="start">输入：调度记录 + 事件 + 汇总结果</text>
+<text x="150" y="3704.0" fill="#215547" font-size="25" text-anchor="start">输出：表格、统计报表与导出文件</text>
+<text x="150" y="3735.0" fill="#215547" font-size="25" text-anchor="start">不参与 Endpoint 选择</text>
+<rect x="1270" y="320" width="1080" height="155" rx="16" fill="#faf5ff" stroke="#a386bb" stroke-width="2" stroke-dasharray="9 6"/>
+<text x="1290" y="361.7" fill="#624982" font-size="29" text-anchor="start">真实网关接入｜可选上游集成</text>
+<path d="M1290 372 H2330" stroke="#dbe5ec"/>
+<text x="1290" y="399.3" fill="#624982" font-size="21" text-anchor="start">输入：实际请求 + 已知长度/预测/SLO</text>
+<text x="1290" y="426.3" fill="#624982" font-size="21" text-anchor="start">输出：SchedulerRequest</text>
+<text x="1290" y="453.3" fill="#624982" font-size="21" text-anchor="start">当前未部署模型请求网关</text>
+<rect x="1330" y="530" width="1100" height="160" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1350" y="571.7" fill="#1d354b" font-size="29" text-anchor="start">① 请求接收与校验</text>
+<path d="M1350 582 H2410" stroke="#dbe5ec"/>
+<text x="1350" y="611.2" fill="#1d354b" font-size="23" text-anchor="start">输入：SchedulerRequest / 字段字典</text>
+<text x="1350" y="640.2" fill="#1d354b" font-size="23" text-anchor="start">输出：标准请求 + SchedulingRecord</text>
+<text x="1350" y="669.2" fill="#1d354b" font-size="23" text-anchor="start">校验字段、唯一 ID，推进当前状态</text>
+<rect x="1330" y="735" width="1100" height="205" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1350" y="776.7" fill="#1d354b" font-size="29" text-anchor="start">② Endpoint 分层过滤</text>
+<path d="M1350 787 H2410" stroke="#dbe5ec"/>
+<text x="1350" y="818.0" fill="#1d354b" font-size="25" text-anchor="start">输入：请求 + 静态配置 + 最新状态</text>
+<text x="1350" y="849.0" fill="#1d354b" font-size="25" text-anchor="start">输出：EndpointPool + 排除原因</text>
+<text x="1350" y="880.0" fill="#1d354b" font-size="25" text-anchor="start">compatible：模型/接口/上下文；eligible：健康/Cooldown</text>
+<text x="1350" y="911.0" fill="#1d354b" font-size="25" text-anchor="start">feasible：再满足 RPM/TPM/并发硬容量</text>
+<rect x="1450" y="1000" width="600" height="155" rx="16" fill="#eef5fc" stroke="#628caf" stroke-width="2"/>
+<text x="1470" y="1041.7" fill="#234967" font-size="29" text-anchor="start">③ 高优先级？</text>
+<path d="M1470 1052 H2030" stroke="#dbe5ec"/>
+<text x="1470" y="1083.0" fill="#234967" font-size="25" text-anchor="start">request.priority == 1</text>
+<text x="1470" y="1114.0" fill="#234967" font-size="25" text-anchor="start">核心优先级为 0 / 1</text>
+<rect x="960" y="1140" width="560" height="180" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="980" y="1181.7" fill="#1d354b" font-size="29" text-anchor="start">高优先级即时通道</text>
+<path d="M980 1192 H1500" stroke="#dbe5ec"/>
+<text x="980" y="1223.0" fill="#1d354b" font-size="25" text-anchor="start">输出：路径 priority_immediate，范围 all</text>
+<text x="980" y="1254.0" fill="#1d354b" font-size="25" text-anchor="start">绕过窗口与繁忙软筛选</text>
+<text x="980" y="1285.0" fill="#1d354b" font-size="25" text-anchor="start">仍受兼容性、健康、冷却和硬容量约束</text>
+<rect x="1630" y="1230" width="880" height="245" rx="16" fill="#eef5fc" stroke="#628caf" stroke-width="2"/>
+<text x="1650" y="1271.7" fill="#234967" font-size="29" text-anchor="start">④ 健康候选全部繁忙？</text>
+<path d="M1650 1282 H2490" stroke="#dbe5ec"/>
+<text x="1650" y="1313.0" fill="#234967" font-size="25" text-anchor="start">输入：eligible + 负载 + 软阈值</text>
+<text x="1650" y="1344.0" fill="#234967" font-size="25" text-anchor="start">单端点：RPM≥95% 或 TPM≥95%</text>
+<text x="1650" y="1375.0" fill="#234967" font-size="25" text-anchor="start">或并发≥最大并发−3；阈值可配置</text>
+<text x="1650" y="1406.0" fill="#234967" font-size="25" text-anchor="start">容量已满仍参与；空 eligible 不判繁忙</text>
+<rect x="960" y="1390" width="560" height="170" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="980" y="1431.7" fill="#1d354b" font-size="29" text-anchor="start">⑤ 普通即时通道</text>
+<path d="M980 1442 H1500" stroke="#dbe5ec"/>
+<text x="980" y="1473.0" fill="#1d354b" font-size="25" text-anchor="start">输出：路径 idle_immediate，范围 non_busy</text>
+<text x="980" y="1504.0" fill="#1d354b" font-size="25" text-anchor="start">派发时仅选当前不繁忙的端点</text>
+<text x="980" y="1535.0" fill="#1d354b" font-size="25" text-anchor="start">即时调度不保证立即开始执行</text>
+<rect x="1660" y="1530" width="850" height="180" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1680" y="1571.7" fill="#1d354b" font-size="29" text-anchor="start">⑥ 繁忙窗口聚合｜只聚合</text>
+<path d="M1680 1582 H2490" stroke="#dbe5ec"/>
+<text x="1680" y="1613.0" fill="#1d354b" font-size="25" text-anchor="start">输入：普通繁忙请求 + 窗口参数</text>
+<text x="1680" y="1644.0" fill="#1d354b" font-size="25" text-anchor="start">输出：RequestBatch，路径 busy_window / all</text>
+<text x="1680" y="1675.0" fill="#1d354b" font-size="25" text-anchor="start">首条开始计时；满批或超时释放；模拟 EOF 可释放</text>
+<rect x="960" y="1630" width="560" height="180" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="980" y="1671.7" fill="#1d354b" font-size="29" text-anchor="start">即时请求分类｜标签冻结</text>
+<path d="M980 1682 H1500" stroke="#dbe5ec"/>
+<text x="980" y="1713.0" fill="#1d354b" font-size="25" text-anchor="start">输入：单条请求 + 可观测负载</text>
+<text x="980" y="1744.0" fill="#1d354b" font-size="25" text-anchor="start">输出：input_heavy / output_heavy / heavy</text>
+<text x="980" y="1775.0" fill="#1d354b" font-size="25" text-anchor="start">分类后进入相应即时队列</text>
+<rect x="1660" y="1780" width="850" height="170" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1680" y="1821.7" fill="#1d354b" font-size="29" text-anchor="start">窗口请求分类｜标签冻结</text>
+<path d="M1680 1832 H2490" stroke="#dbe5ec"/>
+<text x="1680" y="1863.0" fill="#1d354b" font-size="25" text-anchor="start">输入：已释放 RequestBatch + 可观测负载</text>
+<text x="1680" y="1894.0" fill="#1d354b" font-size="25" text-anchor="start">输出：每条请求的轻重标签</text>
+<text x="1680" y="1925.0" fill="#1d354b" font-size="25" text-anchor="start">派发恢复时不重新分类或排序</text>
+<rect x="1660" y="2005" width="850" height="170" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1680" y="2046.7" fill="#1d354b" font-size="29" text-anchor="start">⑦ 请求排序｜独立策略</text>
+<path d="M1680 2057 H2490" stroke="#dbe5ec"/>
+<text x="1680" y="2088.0" fill="#1d354b" font-size="25" text-anchor="start">输入：batch.requests + 分类/状态上下文</text>
+<text x="1680" y="2119.0" fill="#1d354b" font-size="25" text-anchor="start">输出：有序请求 / 完整 request_id 顺序</text>
+<text x="1680" y="2150.0" fill="#1d354b" font-size="25" text-anchor="start">默认 priority_then_light；可选 weighted_length / fifo</text>
+<rect x="1330" y="2250" width="1180" height="200" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1350" y="2291.7" fill="#1d354b" font-size="29" text-anchor="start">⑧ 请求派发队列</text>
+<path d="M1350 2302 H2490" stroke="#dbe5ec"/>
+<text x="1350" y="2333.0" fill="#1d354b" font-size="25" text-anchor="start">输入：即时请求 + 窗口排序结果</text>
+<text x="1350" y="2364.0" fill="#1d354b" font-size="25" text-anchor="start">输出：逐条派发尝试</text>
+<text x="1350" y="2395.0" fill="#1d354b" font-size="25" text-anchor="start">高优先级 → 普通即时 → 窗口；窗口队首阻塞</text>
+<text x="1350" y="2426.0" fill="#1d354b" font-size="25" text-anchor="start">顺序提交允许并发执行</text>
+<rect x="1420" y="2490" width="1090" height="235" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1440" y="2531.7" fill="#1d354b" font-size="29" text-anchor="start">⑨ 派发前重新过滤与容量检查｜三条路径共用</text>
+<path d="M1440 2542 H2490" stroke="#dbe5ec"/>
+<text x="1440" y="2573.0" fill="#1d354b" font-size="25" text-anchor="start">输入：请求 + 路径范围 + 最新状态</text>
+<text x="1440" y="2604.0" fill="#1d354b" font-size="25" text-anchor="start">输出：当前可路由候选 EndpointView 集合</text>
+<text x="1440" y="2635.0" fill="#1d354b" font-size="25" text-anchor="start">all：全部健康可行端点；non_busy：再排除繁忙端点</text>
+<text x="1440" y="2666.0" fill="#1d354b" font-size="25" text-anchor="start">每次派发重新检查，不沿用到达时的候选快照</text>
+<rect x="930" y="2490" width="380" height="240" rx="16" fill="#fff8ed" stroke="#c29a67" stroke-width="2"/>
+<text x="950" y="2531.7" fill="#805d2a" font-size="29" text-anchor="start">请求拒绝</text>
+<path d="M950 2542 H1290" stroke="#dbe5ec"/>
+<text x="950" y="2573.0" fill="#805d2a" font-size="25" text-anchor="start">条件：无兼容端点</text>
+<text x="950" y="2604.0" fill="#805d2a" font-size="25" text-anchor="start">或单请求预留 tokens</text>
+<text x="950" y="2635.0" fill="#805d2a" font-size="25" text-anchor="start">超过每个兼容端点 TPM 上限</text>
+<text x="950" y="2666.0" fill="#805d2a" font-size="25" text-anchor="start">输出：rejected + 原因</text>
+<rect x="930" y="2810" width="380" height="260" rx="16" fill="#fff8ed" stroke="#c29a67" stroke-width="2"/>
+<text x="950" y="2851.7" fill="#805d2a" font-size="29" text-anchor="start">暂不可执行｜保持排队</text>
+<path d="M950 2862 H1290" stroke="#dbe5ec"/>
+<text x="950" y="2893.0" fill="#805d2a" font-size="25" text-anchor="start">条件：无健康可用端点</text>
+<text x="950" y="2924.0" fill="#805d2a" font-size="25" text-anchor="start">或冷却/硬容量/软筛选阻塞</text>
+<text x="950" y="2955.0" fill="#805d2a" font-size="25" text-anchor="start">反馈、额度/冷却到期</text>
+<text x="950" y="2986.0" fill="#805d2a" font-size="25" text-anchor="start">或外部健康恢复后重试</text>
+<rect x="1490" y="2790" width="1020" height="200" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1510" y="2831.7" fill="#1d354b" font-size="29" text-anchor="start">⑩ 统一 Endpoint 路由</text>
+<path d="M1510 2842 H2490" stroke="#dbe5ec"/>
+<text x="1510" y="2873.0" fill="#1d354b" font-size="25" text-anchor="start">输入：单请求 + 当前候选 + RoutingContext</text>
+<text x="1510" y="2904.0" fill="#1d354b" font-size="25" text-anchor="start">上下文：时间、静态配置/价格、近期性能缓存</text>
+<text x="1510" y="2935.0" fill="#1d354b" font-size="25" text-anchor="start">输出：RouteDecision（含原请求与 selected_endpoint_id）</text>
+<text x="1510" y="2966.0" fill="#1d354b" font-size="25" text-anchor="start">默认 min_rpm；不做 Pareto/SLO/成本比较</text>
+<rect x="1490" y="3070" width="1020" height="170" rx="16" fill="#eff7ff" stroke="#6d9fc6" stroke-width="3"/>
+<text x="1510" y="3111.7" fill="#1c527b" font-size="29" text-anchor="start">11 派发时预留状态｜执行之前</text>
+<path d="M1510 3122 H2490" stroke="#dbe5ec"/>
+<text x="1510" y="3153.0" fill="#1c527b" font-size="25" text-anchor="start">输入：RouteDecision</text>
+<text x="1510" y="3184.0" fill="#1c527b" font-size="25" text-anchor="start">输出：更新后的共享 EndpointState</text>
+<text x="1510" y="3215.0" fill="#1c527b" font-size="25" text-anchor="start">RPM +1；TPM +输入及预测输出；并发 +1</text>
+<rect x="1490" y="3300" width="1020" height="160" rx="16" fill="#ffffff" stroke="#758a9c" stroke-width="2"/>
+<text x="1510" y="3341.7" fill="#1d354b" font-size="29" text-anchor="start">12 执行交接接口</text>
+<path d="M1510 3352 H2490" stroke="#dbe5ec"/>
+<text x="1510" y="3381.2" fill="#1d354b" font-size="23" text-anchor="start">输入：已预留的 RouteDecision</text>
+<text x="1510" y="3410.2" fill="#1d354b" font-size="23" text-anchor="start">输出：投递到核心之外的执行器</text>
+<text x="1510" y="3439.2" fill="#1d354b" font-size="23" text-anchor="start">on_dispatch 回调 / take_decisions 出箱</text>
+<rect x="1490" y="3580" width="1020" height="210" rx="16" fill="#eff7ff" stroke="#6d9fc6" stroke-width="3"/>
+<text x="1510" y="3621.7" fill="#1c527b" font-size="29" text-anchor="start">13 执行反馈与状态更新</text>
+<path d="M1510 3632 H2490" stroke="#dbe5ec"/>
+<text x="1510" y="3663.0" fill="#1c527b" font-size="25" text-anchor="start">输入：ExecutionResult（成功/失败/限流及实际用量）</text>
+<text x="1510" y="3694.0" fill="#1c527b" font-size="25" text-anchor="start">输出：状态、历史、调度记录与事件</text>
+<text x="1510" y="3725.0" fill="#1c527b" font-size="25" text-anchor="start">释放并发；修正实际 TPM；更新失败/Cooldown/历史</text>
+<text x="1510" y="3756.0" fill="#1c527b" font-size="25" text-anchor="start">调用 tick 尝试等待请求；RPM 不因完成而立即释放</text>
+<rect x="2940" y="310" width="650" height="195" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="351.7" fill="#203e59" font-size="29" text-anchor="start">调度配置 scheduler_config.json</text>
+<path d="M2960 362 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="393.0" fill="#203e59" font-size="25" text-anchor="start">输出：SchedulerConfig</text>
+<text x="2960" y="424.0" fill="#203e59" font-size="25" text-anchor="start">繁忙阈值、窗口、额度/历史窗口、冷却参数</text>
+<text x="2960" y="455.0" fill="#203e59" font-size="25" text-anchor="start">排序/路由策略名称与分类配置</text>
+<rect x="2940" y="570" width="650" height="180" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="611.7" fill="#203e59" font-size="29" text-anchor="start">Endpoint 静态配置 endpoint_config.json</text>
+<path d="M2960 622 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="653.0" fill="#203e59" font-size="25" text-anchor="start">输出：EndpointConfig 集合</text>
+<text x="2960" y="684.0" fill="#203e59" font-size="25" text-anchor="start">模型、接口、上下文、RPM/TPM/并发上限</text>
+<text x="2960" y="715.0" fill="#203e59" font-size="25" text-anchor="start">价格与可选 api_base / deployment_model</text>
+<rect x="2940" y="850" width="650" height="270" rx="16" fill="#eff7ff" stroke="#6d9fc6" stroke-width="3"/>
+<text x="2960" y="891.7" fill="#1c527b" font-size="29" text-anchor="start">Endpoint 共享状态管理</text>
+<path d="M2960 902 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="933.0" fill="#1c527b" font-size="25" text-anchor="start">输入：静态配置 + 派发预留 + 反馈 + 时间/健康更新</text>
+<text x="2960" y="964.0" fill="#1c527b" font-size="25" text-anchor="start">输出：EndpointState / EndpointView 快照</text>
+<text x="2960" y="995.0" fill="#1c527b" font-size="25" text-anchor="start">RPM、TPM、并发、健康、Cooldown</text>
+<text x="2960" y="1026.0" fill="#1c527b" font-size="25" text-anchor="start">额度按派发时间滚动过期，默认 60 秒</text>
+<text x="2960" y="1057.0" fill="#1c527b" font-size="25" text-anchor="start">全路径共享；运行状态独立于策略配置</text>
+<rect x="2940" y="1210" width="650" height="185" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="1251.7" fill="#203e59" font-size="29" text-anchor="start">冻结百分位参考与分类策略</text>
+<path d="M2960 1262 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="1293.0" fill="#203e59" font-size="25" text-anchor="start">output_percentile_reference.parquet + 元数据</text>
+<text x="2960" y="1324.0" fill="#203e59" font-size="25" text-anchor="start">pressure_threshold_policy.json + 分类参数</text>
+<text x="2960" y="1355.0" fill="#203e59" font-size="25" text-anchor="start">用于输出预测长度的百分位分类</text>
+<rect x="2940" y="1460" width="650" height="280" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="1501.7" fill="#203e59" font-size="29" text-anchor="start">轻重分类服务 OutputPercentileClassifier</text>
+<path d="M2960 1512 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="1543.0" fill="#203e59" font-size="25" text-anchor="start">输入：请求 + 当前并发 + 已到达待派发数量 + 参考</text>
+<text x="2960" y="1574.0" fill="#203e59" font-size="25" text-anchor="start">输出：分类标签 + 压力/阈值快照</text>
+<text x="2960" y="1605.0" fill="#203e59" font-size="25" text-anchor="start">即时到达或窗口释放时分类并冻结</text>
+<text x="2960" y="1636.0" fill="#203e59" font-size="25" text-anchor="start">默认 percentile_dynamic；与④繁忙判定独立</text>
+<rect x="2940" y="1910" width="650" height="225" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="1951.7" fill="#203e59" font-size="29" text-anchor="start">可替换排序策略 policies.ranking</text>
+<path d="M2960 1962 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="1992.1" fill="#203e59" font-size="24" text-anchor="start">接口：rank_requests(requests, context)</text>
+<text x="2960" y="2022.1" fill="#203e59" font-size="24" text-anchor="start">兼容：order_batch → request_id 顺序</text>
+<text x="2960" y="2052.1" fill="#203e59" font-size="24" text-anchor="start">默认优先级 → 轻型 → 稳定到达顺序</text>
+<text x="2960" y="2082.1" fill="#203e59" font-size="24" text-anchor="start">weighted_length 使用 input_weight / output_weight</text>
+<rect x="2940" y="2290" width="650" height="215" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="2331.7" fill="#203e59" font-size="29" text-anchor="start">Endpoint 历史性能缓存</text>
+<path d="M2960 2342 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="2373.0" fill="#203e59" font-size="25" text-anchor="start">输入：标准执行反馈 + 历史窗口/样本上限</text>
+<text x="2960" y="2404.0" fill="#203e59" font-size="25" text-anchor="start">输出：近期成功/失败数、平均 E2E/TTFT/TPOT</text>
+<text x="2960" y="2435.0" fill="#203e59" font-size="25" text-anchor="start">状态管理维护，Router 读取</text>
+<text x="2960" y="2466.0" fill="#203e59" font-size="25" text-anchor="start">TTFT/TPOT 仅在反馈提供时可用</text>
+<rect x="2940" y="2650" width="650" height="215" rx="16" fill="#f3f7fc" stroke="#809db7" stroke-width="2"/>
+<text x="2960" y="2691.7" fill="#203e59" font-size="29" text-anchor="start">可替换路由策略 policies.routing</text>
+<path d="M2960 2702 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="2733.0" fill="#203e59" font-size="25" text-anchor="start">接口：select_endpoint(request, endpoints, context)</text>
+<text x="2960" y="2764.0" fill="#203e59" font-size="25" text-anchor="start">输出：一个候选 endpoint_id</text>
+<text x="2960" y="2795.0" fill="#203e59" font-size="25" text-anchor="start">默认 min_rpm 仅比较 RPM 利用率</text>
+<text x="2960" y="2826.0" fill="#203e59" font-size="25" text-anchor="start">历史/价格接口已具备，Pareto 尚未实现</text>
+<rect x="2940" y="3000" width="650" height="230" rx="16" fill="#eff7ff" stroke="#6d9fc6" stroke-width="3"/>
+<text x="2960" y="3041.7" fill="#1c527b" font-size="29" text-anchor="start">时间推进与恢复唤醒</text>
+<path d="M2960 3052 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="3083.0" fill="#1c527b" font-size="25" text-anchor="start">输入：next_wakeup_ms / 执行反馈 / 外部健康变化</text>
+<text x="2960" y="3114.0" fill="#1c527b" font-size="25" text-anchor="start">输出：tick(now_ms) / 状态时间推进 / 队列重试</text>
+<text x="2960" y="3145.0" fill="#1c527b" font-size="25" text-anchor="start">处理窗口超时、额度过期与 Cooldown 到期</text>
+<text x="2960" y="3176.0" fill="#1c527b" font-size="25" text-anchor="start">模拟由 SimulationRunner 驱动；真实接入由调用方驱</text>
+<text x="2960" y="3207.0" fill="#1c527b" font-size="25" text-anchor="start">动</text>
+<rect x="2940" y="3330" width="650" height="245" rx="16" fill="#faf5ff" stroke="#a386bb" stroke-width="2" stroke-dasharray="9 6"/>
+<text x="2960" y="3371.7" fill="#624982" font-size="29" text-anchor="start">LiteLLM 适配与执行｜可选真实接入</text>
+<path d="M2960 3382 H3570" stroke="#dbe5ec"/>
+<text x="2960" y="3413.0" fill="#624982" font-size="25" text-anchor="start">输入：RouteDecision + EndpointConfig + 注入调用</text>
+<text x="2960" y="3444.0" fill="#624982" font-size="25" text-anchor="start">函数</text>
+<text x="2960" y="3475.0" fill="#624982" font-size="25" text-anchor="start">输出：调用参数 → ExecutionResult</text>
+<text x="2960" y="3506.0" fill="#624982" font-size="25" text-anchor="start">需部署绑定；支持实际 usage 与流式 TTFT/TPOT</text>
+<text x="2960" y="3537.0" fill="#624982" font-size="25" text-anchor="start">调用在核心之外执行，不属于默认模拟路径</text>
+<rect x="375.0" y="587" width="110.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="430" y="612.3" fill="#376a58" font-size="23" text-anchor="middle">标准请求</text>
+<rect x="946.5078125" y="559" width="216.984375" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1055" y="584.3" fill="#526b7e" font-size="23" text-anchor="middle">SchedulerRequest</text>
+<rect x="1198.5" y="1063" width="143.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1270" y="1088.3" fill="#526b7e" font-size="23" text-anchor="middle">1 · 高优先级</text>
+<rect x="1833.5" y="1168" width="143.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1905" y="1193.3" fill="#526b7e" font-size="23" text-anchor="middle">0 · 普通请求</text>
+<rect x="1311.5" y="1343" width="157.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1390" y="1368.3" fill="#526b7e" font-size="23" text-anchor="middle">否 / 空健康池</text>
+<rect x="2064.5" y="1490" width="41.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2085" y="1515.3" fill="#526b7e" font-size="23" text-anchor="middle">是</text>
+<rect x="1984.0" y="1728" width="202.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2085" y="1753.3" fill="#526b7e" font-size="23" text-anchor="middle">满批 / 超时 / EOF</text>
+<rect x="2018.5" y="1960" width="133.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2085" y="1985.3" fill="#526b7e" font-size="23" text-anchor="middle">分类后排序</text>
+<rect x="2084.0" y="2198" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2162" y="2223.3" fill="#526b7e" font-size="23" text-anchor="middle">完整排序结果</text>
+<rect x="1145.0" y="2088" width="110.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1200" y="2113.3" fill="#526b7e" font-size="23" text-anchor="middle">即时请求</text>
+<rect x="1287.0" y="2563" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1365" y="2588.3" fill="#805d2a" font-size="23" text-anchor="middle">永久不可执行</text>
+<rect x="1298.5" y="2793" width="133.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1365" y="2818.3" fill="#805d2a" font-size="23" text-anchor="middle">暂时无候选</text>
+<rect x="1003.5" y="2393" width="133.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1070" y="2418.3" fill="#3379ac" font-size="23" text-anchor="middle">恢复后重试</text>
+<rect x="1922.0" y="2738" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2000" y="2763.3" fill="#526b7e" font-size="23" text-anchor="middle">当前可行候选</text>
+<rect x="1910.5078125" y="3011" width="178.984375" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2000" y="3036.3" fill="#526b7e" font-size="23" text-anchor="middle">RouteDecision</text>
+<rect x="1922.0" y="3253" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2000" y="3278.3" fill="#3379ac" font-size="23" text-anchor="middle">预留后再交接</text>
+<rect x="1055.0" y="3373" width="110.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1110" y="3398.3" fill="#376a58" font-size="23" text-anchor="middle">默认模拟</text>
+<rect x="2647.0" y="3353" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2725" y="3378.3" fill="#82639d" font-size="23" text-anchor="middle">可选真实执行</text>
+<rect x="1043.0078125" y="3561" width="193.984375" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1140" y="3586.3" fill="#526b7e" font-size="23" text-anchor="middle">ExecutionResult</text>
+<rect x="2773.0078125" y="3573" width="193.984375" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2870" y="3598.3" fill="#82639d" font-size="23" text-anchor="middle">ExecutionResult</text>
+<rect x="152.0" y="3243" width="156.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="230" y="3268.3" fill="#376a58" font-size="23" text-anchor="middle">独立实际观测</text>
+<rect x="1043.0" y="3668" width="134.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="1110" y="3693.3" fill="#526b7e" font-size="23" text-anchor="middle">统计 / 记录</text>
+<rect x="2579.0" y="668" width="222.0" height="36" rx="5" fill="#f7f9fc"/>
+<text x="2690" y="693.3" fill="#7f93a5" font-size="23" text-anchor="middle">参数/快照/策略读取</text>
+<rect x="130" y="1050" width="600" height="240" rx="14" fill="#ffffff" stroke="#dce5ed" stroke-width="1"/>
+<text x="150" y="1093.8" fill="#3a546b" font-size="28" text-anchor="start">请求契约与优先级</text>
+<text x="150" y="1139.2" fill="#64798d" font-size="23" text-anchor="start">核心 SchedulerRequest 使用 priority=0/1。</text>
+<text x="150" y="1173.2" fill="#64798d" font-size="23" text-anchor="start">模拟四档：4 → 1；1/2/3 → 0。旧四档排序信息仅保</text>
+<text x="150" y="1207.2" fill="#64798d" font-size="23" text-anchor="start">留在模拟层。</text>
+<text x="150" y="1241.2" fill="#64798d" font-size="23" text-anchor="start">调度字段是 predicted_output_tokens；实际用量由</text>
+<text x="150" y="1275.2" fill="#64798d" font-size="23" text-anchor="start">执行反馈返回。</text>
+<rect x="130" y="1510" width="600" height="240" rx="14" fill="#ffffff" stroke="#dce5ed" stroke-width="1"/>
+<text x="150" y="1553.8" fill="#3a546b" font-size="28" text-anchor="start">当前默认策略</text>
+<text x="150" y="1599.2" fill="#64798d" font-size="23" text-anchor="start">排序：priority_then_light。</text>
+<text x="150" y="1633.2" fill="#64798d" font-size="23" text-anchor="start">同优先级先轻型，类型相同时保持到达顺序。</text>
+<text x="150" y="1667.2" fill="#64798d" font-size="23" text-anchor="start">可选：weighted_length、fifo。</text>
+<text x="150" y="1701.2" fill="#64798d" font-size="23" text-anchor="start">路由：min_rpm；分类：percentile_dynamic。</text>
+<text x="150" y="1735.2" fill="#64798d" font-size="23" text-anchor="start">默认 oracle 模拟使用理想输出预测。</text>
+<rect x="130" y="2000" width="600" height="308" rx="14" fill="#ffffff" stroke="#dce5ed" stroke-width="1"/>
+<text x="150" y="2043.8" fill="#3a546b" font-size="28" text-anchor="start">候选池与执行边界</text>
+<text x="150" y="2089.2" fill="#64798d" font-size="23" text-anchor="start">繁忙判定读取 eligible；容量已满的健康端点仍参与判</text>
+<text x="150" y="2123.2" fill="#64798d" font-size="23" text-anchor="start">断。</text>
+<text x="150" y="2157.2" fill="#64798d" font-size="23" text-anchor="start">实际路由只接收最新可行候选，普通即时请求还要排除</text>
+<text x="150" y="2191.2" fill="#64798d" font-size="23" text-anchor="start">繁忙端点。</text>
+<text x="150" y="2225.2" fill="#64798d" font-size="23" text-anchor="start">即时路径绕过窗口，但可能等待容量。</text>
+<text x="150" y="2259.2" fill="#64798d" font-size="23" text-anchor="start">顺序提交允许并发执行，窗口队首不可派发时保持等待</text>
+<text x="150" y="2293.2" fill="#64798d" font-size="23" text-anchor="start">。</text>
+<rect x="130" y="2450" width="600" height="206" rx="14" fill="#ffffff" stroke="#dce5ed" stroke-width="1"/>
+<text x="150" y="2493.8" fill="#3a546b" font-size="28" text-anchor="start">线条含义</text>
+<text x="150" y="2539.2" fill="#64798d" font-size="23" text-anchor="start">深色实线：请求、决定、执行与结果数据。</text>
+<text x="150" y="2573.2" fill="#64798d" font-size="23" text-anchor="start">灰色虚线：配置、快照、缓存与策略读取。</text>
+<text x="150" y="2607.2" fill="#64798d" font-size="23" text-anchor="start">蓝色虚线：预留、反馈写入与恢复唤醒。</text>
+<text x="150" y="2641.2" fill="#64798d" font-size="23" text-anchor="start">绿色实线：独立实际观测；紫色：可选真实接入。</text>
+<text x="1860.0" y="3865.4" fill="#5f7489" font-size="26" text-anchor="middle">图中模块表示逻辑职责；调用由 Scheduler 编排。真实执行在核心之外，定时器与状态更新由调用方串行驱动。</text>
+<text x="1860.0" y="3906.6" fill="#7b8b9b" font-size="24" text-anchor="middle">默认模拟服务只提供 E2E；历史接口可读取 TTFT/TPOT。Pareto 尚未实现。PNG / SVG 与 Mermaid 使用同一组节点和连线。</text>
+</svg>

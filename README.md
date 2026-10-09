@@ -1,78 +1,67 @@
-# 大模型请求调度与工作负载分析
+# Endpoint 自适应调度
 
-用于比较请求排序、重型分类和端点路由的离线仿真框架。输入与输出长度来自已记录的 prompt/response 或长度 JSONL，端点和服务时间均为模拟参数，时钟使用虚拟毫秒。
-
-流程图对应的新入口是 **四档优先级、繁忙判定、即时/窗口自适应调度**，配置为 `simulation_adaptive.json`。第4档绕过窗口；其他请求仅在所有端点繁忙时进入窗口。路由沿用 min_rpm。默认旧配置仍保留 `heavy_only` 行为，方便历史实验对照。
+当前主线：统一请求接入、硬过滤、目标模型池繁忙判断、即时/窗口调度、独立排序和统一端点路由。核心只处理优先级 0/1 的标准请求；数据预处理、流量发送和虚拟服务时间位于独立模拟层。默认回放继续使用已有算法和参数，不调用网络模型。
 
 ## 快速开始
 
-已验证 Python 3.12；在项目根目录执行 Windows PowerShell 命令：
+在项目根目录运行：
 
 ```powershell
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# 9 条长度样例：全部执行，不需要原始数据或 tokenizer
+# 48条请求覆盖三个调度分支，不需要 tokenizer
 & .\.venv\Scripts\python.exe -m workload_profiling replay `
-  --config workload_profiling/config/simulation_all_requests.json `
-  --source examples/length_requests.jsonl --source-format lengths `
-  --output-dir workload_profiling/results/simulation_example/all_requests
-
-# 48 条自适应样例：三个调度分支均触发，不需要 tokenizer
-& .\.venv\Scripts\python.exe -m workload_profiling replay `
-  --config workload_profiling/config/simulation_adaptive.json `
   --source examples/adaptive_requests.jsonl --source-format lengths `
   --output-dir workload_profiling/results/simulation/adaptive_example
 
-# 全量原始请求的自适应模式；首次下载固定 tokenizer，不下载模型权重
-& .\.venv\Scripts\python.exe -m workload_profiling replay `
-  --config workload_profiling/config/simulation_adaptive.json `
-  --output-dir workload_profiling/results/simulation/adaptive
+# 默认配置回放全部原始请求；首次下载固定 tokenizer，不下载模型权重
+& .\.venv\Scripts\python.exe -m workload_profiling replay
 
-# 本地网页：http://127.0.0.1:8765；选择“自适应”可编辑繁忙阈值和四档优先级
+# 本地调度网页
 & .\.venv\Scripts\python.exe -m workload_profiling web --open
 
-& .\.venv\Scripts\python.exe -m workload_profiling --help
 & .\.venv\Scripts\python.exe -m unittest discover -s workload_profiling/tests -t .
 ```
 
-Linux/macOS 用 `python3.12` 创建环境，解释器替换为 `.venv/bin/python`。所有运行命令统一使用 `python -m workload_profiling <子命令>`；旧根目录 baseline.py/demo.py 转发文件已删除。
+默认读取 `workload_profiling/config/simulation_adaptive.json`，再加载同目录的端点及调度配置。Linux/macOS 使用 `.venv/bin/python`。
 
-## 只需要读这四份文档
+## 调度规则
 
-| 文档 | 内容 |
-| --- | --- |
-| [使用指南](docs/guide.md) | 安装、配置、全部 CLI 参数、动态资源复现、示例与排错 |
-| [架构与数据](docs/architecture.md) | 目录职责、请求口径、调度时序、结果文件和字段 |
-| [开发接口](docs/development.md) | Python API、策略扩展、sender、HTTP 接口与代码迁移 |
-| [实验说明](docs/experiments.md) | 对照实验、依赖、历史分析、研究结论与待完成项 |
+| 请求 | 调度方式 | 端点范围 |
+| --- | --- | --- |
+| priority=1 | 即时 | 硬过滤后的全部候选 |
+| priority=0，目标模型池不繁忙 | 即时 | 当前不繁忙且满足硬过滤的候选 |
+| priority=0，目标模型池全部繁忙 | 窗口 | 派发时重新硬过滤的全部候选 |
 
-[历史修改记录](docs/archive/history.md) 用于追溯。各次科学实验报告保存在 `workload_profiling/results/stage*/`。
+端点繁忙条件取 OR：RPM 利用率达到 95%、TPM 利用率达到 95%、并发数达到上限减 3；目标模型池内全部健康候选繁忙才判定该池繁忙。高优先级跳过窗口，仍受模型、接口、健康、Cooldown、上下文及硬容量限制。默认模拟保留四档分布以复核旧基线：4 映射为核心的 1，其余映射为 0；新实验可使用 `--priority-assignment binary --high-priority-ratio 0.1`。
 
-## 目录结构
+排序与路由可独立替换。默认仍是 `priority_then_light` 和 `min_rpm`，新增可选 `weighted_length`。历史性能与静态价格已进入路由上下文，Pareto 保留接入位置。LiteLLM 适配器支持参数转换及注入式执行，不新增 SDK 依赖。
+
+## 结构与文档
 
 ```text
-.
-├── requirements.txt             # 唯一依赖版本清单
-├── docs/                        # 四份主题文档 + archive/history.md
-├── examples/                    # 小型数据、排序/路由/sender 示例
-├── experiments/                 # 对照实验、并发审计与诊断
-└── workload_profiling/
-    ├── __main__.py              # replay / web / stream / experiment
-    ├── simulation/                # 调度模拟、分类、排序、路由、导出
-    ├── web/                     # cli + simulation_console/profile_console + templates/
-    ├── runtime/                 # 独立逐条计数、同步 sender、百分位策略
-    ├── common/                  # tokenizer、规范化、校验、统一指标
-    ├── stages/                  # Stage 1 / 2 / 2.1 历史分析
-    ├── config/                  # 场景配置
-    ├── tests/                   # 行为与已有科学产物集成测试
-    └── data/ / results/ / cache/ # 派生数据、实验报告、可重建缓存
+docs/                          使用指南、架构、开发接口
+examples/adaptive_requests.jsonl  唯一可执行样例
+workload_profiling/
+  core/                        标准请求、硬过滤、繁忙判断、窗口、统一路由、共享状态与历史
+  policies/                    可替换排序/路由、冻结ECDF和输出分类策略
+  adapters/                    LiteLLM参数转换、执行反馈适配
+  simulation/                  来源、参数生成、fixed/random/burst发送、虚拟执行、导出
+  common/                      消息规范化、tokenizer、I/O与统计
+  web/                         调度控制台与页面
+  config/                      端点、调度、模拟三层配置及动态分类策略
+  tests/                       主线行为、容量、分类、接口与导出验证
+  data/artifacts/              百分位参考及校验元数据
+  data/tokenizer/              可重用的固定tokenizer缓存
+  results/                     当前回放、百分位表格
+  cache/                       可重建的本地验证缓存
 ```
 
-`prompt数据/` 是默认原始请求来源；`实验数据2/` 是历史网关资料，当前回放不读取。原始数据、历史科学产物及路径保持原样。
+- [使用指南](docs/guide.md)：运行、配置、输入与结果。
+- [架构](docs/architecture.md)：请求流程、容量与模块边界。
+- [开发接口](docs/development.md)：Python API、策略扩展与网页接口。
 
-## 原窗口分类对照结论
+`prompt数据/` 保留默认原始请求来源；未被当前主线使用的备用实验数据已清理。百分位参考表格位于 `workload_profiling/results/reference_view/output-percentile-reference-table.html`。历史回放结果可按原配置重新生成，不作为项目依赖。
 
-当前平级场景下，输出最短优先平均延迟约 134.4631ms，固定 80% 分类约 134.8794ms，动态分类约 134.8741ms。动态机制已生效，尚未证明优于输出最短参照。真实模型执行、SLO、主引擎跨批排序等边界见[实验说明](docs/experiments.md)。
-
-实验命令由 `examples.compare_*` 移至 `experiments.compare_*`，推荐使用统一 experiment 命令。仓库未附全部历史 `results/reproduction/`；缺少参考产物时先运行普通 replay。
+本次清理记录见 [cleanup_report.json](cleanup_report.json)。仍待处理的旧备份、验证资产和无权限临时目录列在报告中；[cleanup_pending.ps1](cleanup_pending.ps1) 默认只预览，需显式传入 `-Execute` 才会删除。原始请求、参考分布、tokenizer、四份有效配置及运行环境保留。

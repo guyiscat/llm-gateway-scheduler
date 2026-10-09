@@ -1,1 +1,1 @@
-"""Offline LLM workload profiling, scheduling simulation and runtime adapters."""
+"""Adaptive request scheduling and endpoint routing simulation."""

@@ -1,19 +1,10 @@
-"""Expand every eligible assistant message into a context/response sample."""
-# 核心数据流程：校验和规范化消息 → 逐条展开 assistant → 计算 request 长度。
-# 完整历史与回答只在内存中使用，返回的长度记录不包含原文。
+"""Validate and normalize text messages without rewriting their context."""
 from __future__ import annotations
 
 from copy import deepcopy
 
 
 ROLES = {"system", "user", "assistant", "tool"}
-# 主数据的固定列顺序；source_message_index/response_origin 用于补充原文定位。
-COLUMNS = [
-    "conversation_id", "request_index", "source_message_index", "response_origin",
-    "input_tokens", "output_tokens", "total_tokens", "message_count",
-    "user_message_count", "assistant_message_count", "system_message_count",
-    "tool_message_count", "response_has_tool_calls", "tokenization_status",
-]
 
 
 class StructureError(ValueError):

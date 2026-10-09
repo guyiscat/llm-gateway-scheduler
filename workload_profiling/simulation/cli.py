@@ -25,7 +25,7 @@ def execute(config, *, source=DEFAULT_SOURCE, source_format="prompt", limit=None
         positive_integer(limit, "limit")
     source, output = Path(source).resolve(), Path(output).resolve()
     # Fixed output names must never overwrite the replay's input file.
-    if source.parent == output and source.name in {"config.json", "summary.json", "endpoints.json", "batches.json", "events.jsonl", "requests.csv", "report.md", "threshold_trace.csv", "classification_policy.json", "classification_metadata.json", "output_percentile_reference.parquet", "output_reference_metadata.json", "replay_config.json"}:
+    if source.parent == output and source.name in {"config.json", "summary.json", "endpoints.json", "endpoint_history.json", "batches.json", "events.jsonl", "requests.csv", "report.md", "threshold_trace.csv", "classification_policy.json", "classification_metadata.json", "output_percentile_reference.parquet", "output_reference_metadata.json", "replay_config.json"}:
         raise ValueError("Output directory would overwrite the input file")
     source_hash = sha256_file(source)
     start = time.perf_counter()
@@ -59,12 +59,24 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--limit", type=int, help="Replay the first N original records")
     parser.add_argument("--arrival-interval-ms", type=int)
-    parser.add_argument("--arrival-mode", choices=["fixed", "burst"])
+    parser.add_argument("--arrival-mode", choices=["fixed", "burst", "random"])
     parser.add_argument("--burst-size", type=int)
     parser.add_argument("--burst-span-ms", type=int)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--batch-wait-ms", type=int)
-    parser.add_argument("--priority-assignment", choices=["uniform", "four_level"])
+    parser.add_argument("--priority-assignment", choices=["uniform", "four_level", "binary"])
+    parser.add_argument("--high-priority-ratio", type=float, help="High priority proportion in binary simulation mode")
+    for name in ("arrival_seed", "random_min_interval_ms", "random_max_interval_ms", "cooldown_ms",
+                 "history_window_ms", "history_max_samples", "max_tokens", "predicted_output_tokens"):
+        parser.add_argument("--" + name.replace("_", "-"), type=int)
+    for name in ("busy_concurrency_threshold", "input_weight", "output_weight"):
+        parser.add_argument("--" + name.replace("_", "-"), type=float)
+    parser.add_argument("--ranking-direction", choices=["ascending", "descending"])
+    parser.add_argument("--prediction-mode", choices=["oracle", "fixed"])
+    parser.add_argument("--target-model")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=None)
+    for name in ("ttft_ms", "tpot_ms", "e2e_ms"):
+        parser.add_argument("--slo-" + name.replace("_", "-"), type=float)
     parser.add_argument("--busy-rpm-threshold", type=float, help="Busy at RPM utilization >= this fraction, default 0.95")
     parser.add_argument("--busy-tpm-threshold", type=float, help="Busy at TPM utilization >= this fraction, default 0.95")
     parser.add_argument("--busy-concurrency-reserve", type=int, help="Busy at concurrency >= limit minus this margin, default 3")
@@ -77,9 +89,15 @@ def main():
     parser.add_argument("--input-threshold", type=float)
     parser.add_argument("--output-threshold", type=float)
     parser.add_argument("--strategy", help="min_rpm or importable.module:class_or_factory")
-    parser.add_argument("--batch-order", help="fifo, priority_then_light or importable.module:class_or_factory")
+    parser.add_argument("--batch-order", help="fifo, priority_then_light, weighted_length or importable.module:class_or_factory")
     args = parser.parse_args()
     overrides = {name: getattr(args, name) for name in ("arrival_interval_ms", "arrival_mode", "burst_size", "burst_span_ms", "batch_size", "batch_wait_ms", "priority_assignment", "priority_seed", "strategy", "batch_order") if getattr(args, name) is not None}
+    for name in ("high_priority_ratio", "arrival_seed", "random_min_interval_ms", "random_max_interval_ms",
+                 "cooldown_ms", "history_window_ms", "history_max_samples", "max_tokens", "predicted_output_tokens",
+                 "busy_concurrency_threshold", "input_weight", "output_weight", "ranking_direction",
+                 "prediction_mode", "target_model", "stream"):
+        if getattr(args, name) is not None:
+            overrides[name] = getattr(args, name)
     for name in ("output_classification", "output_percentile_threshold"):
         if getattr(args, name) is not None:
             overrides[name] = getattr(args, name)
@@ -94,7 +112,12 @@ def main():
         if getattr(args, argument) is not None:
             overrides[field] = getattr(args, argument)
     try:
-        config = replace(load_config(args.config), **overrides)
+        base = load_config(args.config)
+        slo = {name: getattr(args, "slo_" + name) for name in ("ttft_ms", "tpot_ms", "e2e_ms")
+               if getattr(args, "slo_" + name) is not None}
+        if slo:
+            overrides["slo"] = (base.slo or {}) | slo
+        config = replace(base, **overrides)
         result, summary = execute(config, source=args.source, source_format=args.source_format,
                                   limit=args.limit, output=args.output_dir,
                                   progress=lambda n: print(f"Profiled {n} original requests", flush=True))

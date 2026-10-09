@@ -27,11 +27,19 @@ def read_prompt_requests(source, tokenizer, *, limit=None, progress=None):
                 lengths = counter.input_lengths(messages, tools=prompt.get("tools"), prompt_controls=controls)
                 output = counter.output_length(row["response"])
                 priorities = priority_fields(row)
+                model_parameters = {k: prompt[k] for k in ("tools", "tool_choice", "parallel_tool_calls",
+                    "temperature", "top_p", "response_format", "stop", "seed", "user") if k in prompt}
+                request = WorkloadRequest(row.get("request_id", f"request_{index:06d}"), lengths["input_tokens"], output, index,
+                    messages=tuple(messages), target_model=row.get("target_model"),
+                    predicted_output_tokens=row.get("predicted_output_tokens"),
+                    max_tokens=prompt.get("max_tokens"), stream=prompt.get("stream"),
+                    metadata={**row.get("metadata", {}), **model_parameters},
+                    slo=row.get("slo"), api_type=row.get("api_type", "chat"), **priorities)
             except (ValueError, TypeError, KeyError, IndexError) as error:
                 raise ValueError(f"Invalid prompt/response or tokenization at source line {index + 1} ({type(error).__name__})") from None
             if progress and (index + 1) % 100 == 0:
                 progress(index + 1)
-            yield WorkloadRequest(f"request_{index:06d}", lengths["input_tokens"], output, index, **priorities)
+            yield request
 
 
 def read_length_requests(source, *, limit=None):
@@ -43,6 +51,11 @@ def read_length_requests(source, *, limit=None):
             try:
                 row = json.loads(line)
                 yield WorkloadRequest(row.get("request_id", f"request_{index:06d}"),
-                                      row["input_tokens"], row["output_tokens"], index, **priority_fields(row))
+                                      row["input_tokens"], row["output_tokens"], index,
+                    predicted_output_tokens=row.get("predicted_output_tokens"),
+                    target_model=row.get("target_model"), messages=tuple(row.get("messages", ())),
+                    max_tokens=row.get("max_tokens"), stream=row.get("stream"),
+                    slo=row.get("slo"), metadata=row.get("metadata", {}), api_type=row.get("api_type", "chat"),
+                    **priority_fields(row))
             except (ValueError, TypeError, KeyError) as error:
                 raise ValueError(f"Invalid length record at source line {index + 1} ({type(error).__name__})") from None

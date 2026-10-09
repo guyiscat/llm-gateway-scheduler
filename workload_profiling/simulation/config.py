@@ -1,8 +1,6 @@
 """Validated settings; all clock values use integer simulated milliseconds."""
 from dataclasses import asdict, dataclass, field, replace
 import json
-import math
-from numbers import Real
 from pathlib import Path
 
 from ..common.paths import PACKAGE
@@ -10,14 +8,7 @@ from ..common.paths import PACKAGE
 CONFIG_PATH = PACKAGE / "config/simulation_adaptive.json"
 
 
-def positive_integer(value, name, *, allow_zero=False):
-    if isinstance(value, bool) or not isinstance(value, int) or value < (0 if allow_zero else 1):
-        raise ValueError(f"{name} must be {'nonnegative' if allow_zero else 'positive'} integer")
-
-
-def finite_number(value, name, *, allow_zero=False):
-    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
-        raise ValueError(f"{name} must be finite and {'nonnegative' if allow_zero else 'positive'}")
+from ..common.validation import positive_integer, finite_number
 
 
 @dataclass(frozen=True)
@@ -31,6 +22,13 @@ class EndpointConfig:
     output_tokens_per_ms: float = 20
     service_jitter_fraction: float = 0
     service_jitter_seed: int = 20261005
+    supported_models: tuple[str, ...] = ("default",)
+    api_types: tuple[str, ...] = ("chat",)
+    api_base: str | None = None
+    deployment_model: str | None = None
+    input_price_per_million: float = 0
+    output_price_per_million: float = 0
+    context_limit: int | None = None
 
     def __post_init__(self):
         if not isinstance(self.endpoint_id, str) or not self.endpoint_id.strip():
@@ -44,6 +42,14 @@ class EndpointConfig:
         if self.service_jitter_fraction >= 1:
             raise ValueError("service_jitter_fraction must satisfy 0 <= fraction < 1")
         positive_integer(self.service_jitter_seed, "service_jitter_seed", allow_zero=True)
+        core = self.to_core()
+        object.__setattr__(self, "supported_models", core.supported_models)
+        object.__setattr__(self, "api_types", core.api_types)
+
+    def to_core(self):
+        from ..core.config import EndpointConfig as CoreEndpointConfig
+        fields = CoreEndpointConfig.__dataclass_fields__
+        return CoreEndpointConfig(**{name: getattr(self, name) for name in fields})
 
 
 @dataclass(frozen=True)
@@ -70,6 +76,23 @@ class SimulationConfig:
     busy_rpm_threshold: float = 0.95
     busy_tpm_threshold: float = 0.95
     busy_concurrency_reserve: int = 3
+    busy_concurrency_threshold: float | None = None
+    cooldown_ms: int = 1000
+    history_window_ms: int = 60000
+    history_max_samples: int = 10000
+    input_weight: float = 1
+    output_weight: float = 1
+    ranking_direction: str = "ascending"
+    high_priority_ratio: float = .1
+    arrival_seed: int = 20261008
+    random_min_interval_ms: int = 1
+    random_max_interval_ms: int = 10
+    target_model: str = "default"
+    stream: bool = False
+    max_tokens: int | None = None
+    slo: dict | None = None
+    prediction_mode: str = "oracle"
+    predicted_output_tokens: int = 500
 
     def __post_init__(self):
         for name in ("arrival_interval_ms", "batch_size", "window_ms"):
@@ -86,11 +109,11 @@ class SimulationConfig:
                 raise ValueError(f"{name} must be a nonempty path string or null")
         if (self.output_reference_path is None) != (self.output_reference_metadata_path is None):
             raise ValueError("Output reference and metadata paths must be supplied together")
-        if self.priority_assignment not in ("uniform", "four_level"):
-            raise ValueError("priority_assignment must be uniform or four_level")
+        if self.priority_assignment not in ("uniform", "four_level", "binary"):
+            raise ValueError("priority_assignment must be uniform, four_level or binary")
         positive_integer(self.priority_seed, "priority_seed", allow_zero=True)
-        if self.arrival_mode not in ("fixed", "burst"):
-            raise ValueError("arrival_mode must be fixed or burst")
+        if self.arrival_mode not in ("fixed", "burst", "random"):
+            raise ValueError("arrival_mode must be fixed, burst or random")
         positive_integer(self.burst_size, "burst_size")
         if self.burst_size < 2:
             raise ValueError("burst_size must be at least 2")
@@ -115,8 +138,33 @@ class SimulationConfig:
             if getattr(self, name) > 1:
                 raise ValueError(f"{name} must satisfy 0 < threshold <= 1")
         positive_integer(self.busy_concurrency_reserve, "busy_concurrency_reserve", allow_zero=True)
-        if any(self.busy_concurrency_reserve >= e.concurrency_limit for e in self.endpoints):
+        if self.busy_concurrency_threshold is None and any(self.busy_concurrency_reserve >= e.concurrency_limit for e in self.endpoints):
             raise ValueError("busy_concurrency_reserve must be smaller than every endpoint concurrency_limit")
+
+        finite_number(self.high_priority_ratio, "high_priority_ratio", allow_zero=True)
+        if self.high_priority_ratio > 1:
+            raise ValueError("high_priority_ratio must be <= 1")
+        for name in ("arrival_seed", "random_min_interval_ms", "random_max_interval_ms", "predicted_output_tokens"):
+            positive_integer(getattr(self, name), name, allow_zero=True)
+        if self.random_max_interval_ms < self.random_min_interval_ms:
+            raise ValueError("Random maximum interval must be >= minimum")
+        if self.prediction_mode not in ("oracle", "fixed"):
+            raise ValueError("prediction_mode must be oracle or fixed")
+        if not isinstance(self.target_model, str) or not self.target_model.strip() or not isinstance(self.stream, bool):
+            raise ValueError("Invalid simulation target_model or stream")
+        if self.max_tokens is not None:
+            positive_integer(self.max_tokens, "max_tokens")
+        from ..core.request import SLO
+        if self.slo is not None:
+            SLO(**self.slo)
+        self.scheduler_config()
+
+    def scheduler_config(self):
+        from ..core.config import SchedulerConfig
+        return SchedulerConfig(max_batch_size=self.batch_size, max_wait_ms=self.batch_wait_ms,
+            ranking_policy=self.batch_order, routing_policy=self.strategy,
+            **{name: getattr(self, name) for name in SchedulerConfig.__dataclass_fields__
+               if name not in {"max_batch_size", "max_wait_ms", "ranking_policy", "routing_policy"}})
 
     def to_dict(self):
         return asdict(self)
@@ -132,7 +180,39 @@ class SimulationConfig:
 
 def load_config(path=CONFIG_PATH):
     path = Path(path).resolve()
-    config = SimulationConfig.from_dict(json.loads(path.read_text(encoding="utf-8-sig")))
+    settings = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(settings, dict):
+        raise ValueError("Simulation config must be an object")
+    if "endpoint_config" in settings or "scheduler_config" in settings:
+        from ..core.config import load_endpoint_configs, load_scheduler_config
+        settings = dict(settings)
+        endpoint_path = settings.pop("endpoint_config", None)
+        scheduler_path = settings.pop("scheduler_config", None)
+        if not all(isinstance(p, str) and p.strip() for p in (endpoint_path, scheduler_path)):
+            raise ValueError("Split config requires endpoint_config and scheduler_config paths")
+        endpoints = load_endpoint_configs(path.parent / endpoint_path)
+        scheduler = load_scheduler_config(path.parent / scheduler_path).to_dict()
+        aliases = {"max_batch_size": "batch_size", "max_wait_ms": "batch_wait_ms",
+                   "ranking_policy": "batch_order", "routing_policy": "strategy"}
+        scheduler = {aliases.get(k, k): v for k, v in scheduler.items()}
+        if set(settings) & (set(scheduler) | {"endpoints"}):
+            raise ValueError("Put endpoint capabilities and scheduler parameters in their dedicated files")
+        service = settings.pop("service_time", {})
+        overrides = settings.pop("endpoint_service", {})
+        service_fields = {"base_latency_ms", "input_tokens_per_ms", "output_tokens_per_ms",
+                          "service_jitter_fraction", "service_jitter_seed"}
+        if not isinstance(service, dict) or not set(service) <= service_fields:
+            raise ValueError("Invalid simulation service_time fields")
+        if not isinstance(overrides, dict) or not set(overrides) <= {e.endpoint_id for e in endpoints}:
+            raise ValueError("Unknown endpoint_service endpoint")
+        rows = []
+        for endpoint in endpoints:
+            extra = overrides.get(endpoint.endpoint_id, {})
+            if not isinstance(extra, dict) or not set(extra) <= service_fields:
+                raise ValueError("Invalid endpoint_service fields")
+            rows.append({**asdict(endpoint), **service, **extra})
+        settings.update(scheduler, endpoints=rows)
+    config = SimulationConfig.from_dict(settings)
     resources = {}
     for name in ("output_policy_path", "output_reference_path", "output_reference_metadata_path"):
         value = getattr(config, name)

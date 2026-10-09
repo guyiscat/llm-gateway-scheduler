@@ -1,0 +1,137 @@
+%% Endpoint 调度器：模块输入输出与数据流（依据当前代码）
+%% PNG / SVG 使用相同节点与连线，采用固定三栏排版；Mermaid 自动排版可能不同。
+%% 实线：请求/执行数据；灰色虚线：配置/策略读取；蓝色虚线：状态更新/唤醒。
+%% 核心优先级为 0/1；模拟兼容四档，4 -> 1，1/2/3 -> 0，旧四档排序信息保留在模拟层。
+%% 默认 priority_then_light + min_rpm + percentile_dynamic；weighted_length 是可选策略。
+%% 真实网关需要上游集成，LiteLLMAdapter 为可选能力；Pareto 尚未实现。
+%% simulation_adaptive.json 默认 oracle：将实际输出视为理想预测，独立观测仍由模拟执行器消费。
+%% 即时通道跳过暂不可执行项；窗口队首阻塞。顺序提交允许并发执行。
+%% 窗口从第一条到达开始计时，后续到达不重置；释放后下一窗口重新计时。
+%% 分类压力用于调节轻重阈值，与 RPM/TPM/并发的繁忙判定职责不同。
+%% 真实调用在核心之外执行；状态变更与 tick 由调用方串行驱动。
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Microsoft YaHei, sans-serif","fontSize":"18px","primaryColor":"#ffffff","primaryTextColor":"#18324b","primaryBorderColor":"#71869a","lineColor":"#657a8d","clusterBkg":"#f4f7fb","clusterBorder":"#dce5ed"},"flowchart":{"htmlLabels":true,"curve":"linear","nodeSpacing":30,"rankSpacing":45,"padding":18,"useMaxWidth":false}}}%%
+flowchart TB
+  subgraph SIM["输入、模拟与辅助功能｜核心之外"]
+    DATA["数据处理与参数计算<br/>输入：数据集 + 模拟配置<br/>输出：SchedulerRequest + 独立实际观测<br/>预测用于调度；实际观测用于模拟执行"]
+    SENDER["模拟请求发送<br/>输入：标准请求 + 到达模式/频率<br/>输出：按到达时刻调用 submit_request<br/>fixed / random / burst"]
+    SIMCFG["模拟服务参数<br/>输入：simulation_adaptive.json<br/>输出：延迟、吞吐与可选抖动参数<br/>不属于 Endpoint 的调度容量配置"]
+    SIMEXEC["模拟执行器｜默认执行路径<br/>输入：RouteDecision + 实际观测 + 服务参数<br/>输出：虚拟完成事件 / ExecutionResult<br/>默认只生成 E2E，TTFT/TPOT 未模拟"]
+    REPORT["实验结果与网页展示<br/>输入：调度记录 + 事件 + 汇总结果<br/>输出：表格、统计报表与导出文件<br/>不参与 Endpoint 选择"]
+  end
+
+  REAL["真实网关接入｜可选上游集成<br/>输入：实际请求 + 已知长度/预测/SLO<br/>输出：SchedulerRequest<br/>当前未部署模型请求网关"]
+
+  subgraph CORE["共享核心调度｜Scheduler 串行编排"]
+    RECEIVE["① 请求接收与校验<br/>输入：SchedulerRequest / 字段字典<br/>输出：标准请求 + SchedulingRecord<br/>校验字段、唯一 ID，推进当前状态"]
+    FILTER["② Endpoint 分层过滤<br/>输入：请求 + 静态配置 + 最新状态<br/>输出：EndpointPool + 排除原因<br/>compatible：模型/接口/上下文；eligible：健康/Cooldown<br/>feasible：再满足 RPM/TPM/并发硬容量"]
+    PRIORITY{"③ 高优先级？<br/>request.priority == 1<br/>核心优先级为 0 / 1"}
+    HIGH["高优先级即时通道<br/>输出：路径 priority_immediate，范围 all<br/>绕过窗口与繁忙软筛选<br/>仍受兼容性、健康、冷却和硬容量约束"]
+    BUSY{"④ 健康候选全部繁忙？<br/>输入：eligible + 负载 + 软阈值<br/>单端点：RPM≥95% 或 TPM≥95%<br/>或并发≥最大并发−3；阈值可配置<br/>容量已满仍参与；空 eligible 不判繁忙"}
+    IDLE["⑤ 普通即时通道<br/>输出：路径 idle_immediate，范围 non_busy<br/>派发时仅选当前不繁忙的端点<br/>即时调度不保证立即开始执行"]
+    WINDOW["⑥ 繁忙窗口聚合｜只聚合<br/>输入：普通繁忙请求 + 窗口参数<br/>输出：RequestBatch，路径 busy_window / all<br/>首条开始计时；满批或超时释放；模拟 EOF 可释放"]
+    CIM["即时请求分类｜标签冻结<br/>输入：单条请求 + 可观测负载<br/>输出：input_heavy / output_heavy / heavy<br/>分类后进入相应即时队列"]
+    CWIN["窗口请求分类｜标签冻结<br/>输入：已释放 RequestBatch + 可观测负载<br/>输出：每条请求的轻重标签<br/>派发恢复时不重新分类或排序"]
+    RANK["⑦ 请求排序｜独立策略<br/>输入：batch.requests + 分类/状态上下文<br/>输出：有序请求 / 完整 request_id 顺序<br/>默认 priority_then_light；可选 weighted_length / fifo"]
+    DISPATCH["⑧ 请求派发队列<br/>输入：即时请求 + 窗口排序结果<br/>输出：逐条派发尝试<br/>高优先级 → 普通即时 → 窗口；窗口队首阻塞<br/>顺序提交允许并发执行"]
+    CHECK["⑨ 派发前重新过滤与容量检查｜三条路径共用<br/>输入：请求 + 路径范围 + 最新状态<br/>输出：当前可路由候选 EndpointView 集合<br/>all：全部健康可行端点；non_busy：再排除繁忙端点<br/>每次派发重新检查，不沿用到达时的候选快照"]
+    REJECT["请求拒绝<br/>条件：无兼容端点<br/>或单请求预留 tokens<br/>超过每个兼容端点 TPM 上限<br/>输出：rejected + 原因"]
+    WAIT["暂不可执行｜保持排队<br/>条件：无健康可用端点<br/>或冷却/硬容量/软筛选阻塞<br/>反馈、额度/冷却到期<br/>或外部健康恢复后重试"]
+    ROUTER["⑩ 统一 Endpoint 路由<br/>输入：单请求 + 当前候选 + RoutingContext<br/>上下文：时间、静态配置/价格、近期性能缓存<br/>输出：RouteDecision（含原请求与 selected_endpoint_id）<br/>默认 min_rpm；不做 Pareto/SLO/成本比较"]
+    RESERVE["11 派发时预留状态｜执行之前<br/>输入：RouteDecision<br/>输出：更新后的共享 EndpointState<br/>RPM +1；TPM +输入及预测输出；并发 +1"]
+    EXEC["12 执行交接接口<br/>输入：已预留的 RouteDecision<br/>输出：投递到核心之外的执行器<br/>on_dispatch 回调 / take_decisions 出箱"]
+    FEEDBACK["13 执行反馈与状态更新<br/>输入：ExecutionResult（成功/失败/限流及实际用量）<br/>输出：状态、历史、调度记录与事件<br/>释放并发；修正实际 TPM；更新失败/Cooldown/历史<br/>调用 tick 尝试等待请求；RPM 不因完成而立即释放"]
+  end
+
+  subgraph SERVICES["配置、共享状态与可替换策略"]
+    SCFG["调度配置 scheduler_config.json<br/>输出：SchedulerConfig<br/>繁忙阈值、窗口、额度/历史窗口、冷却参数<br/>排序/路由策略名称与分类配置"]
+    ECFG["Endpoint 静态配置 endpoint_config.json<br/>输出：EndpointConfig 集合<br/>模型、接口、上下文、RPM/TPM/并发上限<br/>价格与可选 api_base / deployment_model"]
+    STATE["Endpoint 共享状态管理<br/>输入：静态配置 + 派发预留 + 反馈 + 时间/健康更新<br/>输出：EndpointState / EndpointView 快照<br/>RPM、TPM、并发、健康、Cooldown<br/>额度按派发时间滚动过期，默认 60 秒<br/>全路径共享；运行状态独立于策略配置"]
+    REF["冻结百分位参考与分类策略<br/>output_percentile_reference.parquet + 元数据<br/>pressure_threshold_policy.json + 分类参数<br/>用于输出预测长度的百分位分类"]
+    CLASSIFIER["轻重分类服务 OutputPercentileClassifier<br/>输入：请求 + 当前并发 + 已到达待派发数量 + 参考<br/>输出：分类标签 + 压力/阈值快照<br/>即时到达或窗口释放时分类并冻结<br/>默认 percentile_dynamic；与④繁忙判定独立"]
+    RANKPOL["可替换排序策略 policies.ranking<br/>接口：rank_requests(requests, context)<br/>兼容：order_batch → request_id 顺序<br/>默认优先级 → 轻型 → 稳定到达顺序<br/>weighted_length 使用 input_weight / output_weight"]
+    HISTORY["Endpoint 历史性能缓存<br/>输入：标准执行反馈 + 历史窗口/样本上限<br/>输出：近期成功/失败数、平均 E2E/TTFT/TPOT<br/>状态管理维护，Router 读取<br/>TTFT/TPOT 仅在反馈提供时可用"]
+    ROUTEPOL["可替换路由策略 policies.routing<br/>接口：select_endpoint(request, endpoints, context)<br/>输出：一个候选 endpoint_id<br/>默认 min_rpm 仅比较 RPM 利用率<br/>历史/价格接口已具备，Pareto 尚未实现"]
+    TIMER["时间推进与恢复唤醒<br/>输入：next_wakeup_ms / 执行反馈 / 外部健康变化<br/>输出：tick(now_ms) / 状态时间推进 / 队列重试<br/>处理窗口超时、额度过期与 Cooldown 到期<br/>模拟由 SimulationRunner 驱动；真实接入由调用方驱动"]
+    LITELLM["LiteLLM 适配与执行｜可选真实接入<br/>输入：RouteDecision + EndpointConfig + 注入调用函数<br/>输出：调用参数 → ExecutionResult<br/>需部署绑定；支持实际 usage 与流式 TTFT/TPOT<br/>调用在核心之外执行，不属于默认模拟路径"]
+  end
+
+  DATA -->|标准请求| SENDER
+  DATA -->|独立实际观测| SIMEXEC
+  SENDER -->|SchedulerRequest| RECEIVE
+  REAL -->|SchedulerRequest| RECEIVE
+  RECEIVE --> FILTER
+  FILTER -->|无 compatible| REJECT
+  FILTER -->|请求 + EndpointPool| PRIORITY
+  PRIORITY -->|1：高优先级| HIGH
+  PRIORITY -->|0：普通请求| BUSY
+  BUSY -->|否 / 空 eligible| IDLE
+  BUSY -->|是| WINDOW
+  HIGH --> CIM
+  IDLE --> CIM
+  CIM -->|分类后的即时请求| DISPATCH
+  WINDOW -->|满批 / 超时 / 模拟 EOF| CWIN
+  CWIN -->|请求 + 冻结标签| RANK
+  RANK -->|完整排序结果| DISPATCH
+  DISPATCH -->|逐条尝试| CHECK
+  CHECK -->|永久不可执行| REJECT
+  CHECK -->|暂时无候选| WAIT
+  WAIT -.->|恢复后重试| DISPATCH
+  CHECK -->|当前可行候选| ROUTER
+  ROUTER -->|RouteDecision| RESERVE
+  RESERVE -->|已完成预留| EXEC
+  EXEC -->|默认模拟| SIMEXEC
+  EXEC -->|可选真实执行| LITELLM
+  SIMCFG -.->|服务参数| SIMEXEC
+  SIMEXEC -->|虚拟完成时回送 ExecutionResult| FEEDBACK
+  LITELLM -->|ExecutionResult| FEEDBACK
+  FEEDBACK -->|记录 / 事件 / 统计| REPORT
+  REJECT -->|拒绝记录| REPORT
+
+  SCFG -.->|参数| RECEIVE
+  SCFG -.->|繁忙阈值| BUSY
+  SCFG -.->|窗口参数| WINDOW
+  SCFG -.->|分类参数| CLASSIFIER
+  SCFG -.->|策略与权重| RANKPOL
+  SCFG -.->|策略名称| ROUTEPOL
+  SCFG -.->|额度 / 冷却 / 历史参数| STATE
+  ECFG -.->|静态初始化| STATE
+  ECFG -.->|兼容能力 / 上限| FILTER
+  ECFG -.->|绑定参数| LITELLM
+  STATE -.->|最新快照| FILTER
+  STATE -.->|eligible 负载| BUSY
+  STATE -.->|最新快照| CHECK
+  STATE -.->|配置 / 状态上下文| ROUTER
+  REF -.->|ECDF / 压力阈值策略| CLASSIFIER
+  STATE -.->|当前并发快照| CLASSIFIER
+  DISPATCH -.->|已到达待派发数量| CLASSIFIER
+  CLASSIFIER -.->|分类服务| CIM
+  CLASSIFIER -.->|分类服务| CWIN
+  RANKPOL -.->|排序接口| RANK
+  HISTORY -.->|近期性能| ROUTER
+  ROUTEPOL -.->|选择接口| ROUTER
+  RESERVE -.->|立即写入额度与并发| STATE
+  FEEDBACK -.->|修正用量 / 释放并发 / 失败与冷却| STATE
+  FEEDBACK -.->|写入标准性能样本| HISTORY
+  FEEDBACK -.->|完成反馈唤醒| TIMER
+  STATE -.->|最早额度 / 冷却恢复时刻| TIMER
+  WINDOW -.->|窗口截止时刻| TIMER
+  TIMER -.->|推进时间 / 外部健康更新| STATE
+  TIMER -.->|截止时释放窗口| WINDOW
+  TIMER -.->|恢复后尝试派发| DISPATCH
+
+  classDef core fill:#ffffff,stroke:#71869a,color:#18324b,stroke-width:1.5px;
+  classDef sim fill:#f1faf5,stroke:#5c9680,color:#174c3e,stroke-width:1.5px;
+  classDef service fill:#f3f7fc,stroke:#7595b4,color:#18324b,stroke-width:1.5px;
+  classDef optional fill:#faf5ff,stroke:#9676b3,color:#5e4279,stroke-dasharray:6 4;
+  classDef guard fill:#fff7ed,stroke:#bf9159,color:#735020,stroke-width:1.5px;
+  classDef decision fill:#eef4fb,stroke:#527fa5,color:#18324b,stroke-width:1.5px;
+  classDef state fill:#edf6ff,stroke:#4e8fc1,color:#16496f,stroke-width:2px;
+  class DATA,SENDER,SIMCFG,SIMEXEC,REPORT sim;
+  class REAL,LITELLM optional;
+  class RECEIVE,FILTER,HIGH,IDLE,WINDOW,CIM,CWIN,RANK,DISPATCH,CHECK,ROUTER,EXEC core;
+  class PRIORITY,BUSY decision;
+  class REJECT,WAIT guard;
+  class SCFG,ECFG,REF,CLASSIFIER,RANKPOL,HISTORY,ROUTEPOL service;
+  class STATE,RESERVE,FEEDBACK,TIMER state;
+  linkStyle 1 stroke:#408c79,stroke-width:2px;
+  linkStyle 20,53,54,55,56,59,60,61 stroke:#4589bb,stroke-width:2px,stroke-dasharray:6 4;

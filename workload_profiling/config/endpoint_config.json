@@ -1,0 +1,43 @@
+{
+  "endpoints": [
+    {
+      "endpoint_id": "endpoint_a",
+      "supported_models": ["default"],
+      "api_types": ["chat"],
+      "api_base": null,
+      "deployment_model": null,
+      "rpm_limit": 60000,
+      "tpm_limit": 500000000,
+      "concurrency_limit": 8,
+      "input_price_per_million": 0,
+      "output_price_per_million": 0,
+      "context_limit": null
+    },
+    {
+      "endpoint_id": "endpoint_b",
+      "supported_models": ["default"],
+      "api_types": ["chat"],
+      "api_base": null,
+      "deployment_model": null,
+      "rpm_limit": 90000,
+      "tpm_limit": 750000000,
+      "concurrency_limit": 12,
+      "input_price_per_million": 0,
+      "output_price_per_million": 0,
+      "context_limit": null
+    },
+    {
+      "endpoint_id": "endpoint_c",
+      "supported_models": ["default"],
+      "api_types": ["chat"],
+      "api_base": null,
+      "deployment_model": null,
+      "rpm_limit": 120000,
+      "tpm_limit": 1000000000,
+      "concurrency_limit": 16,
+      "input_price_per_million": 0,
+      "output_price_per_million": 0,
+      "context_limit": null
+    }
+  ]
+}

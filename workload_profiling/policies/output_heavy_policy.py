@@ -84,7 +84,7 @@ class OutputHeavyPolicy:
             raise ValueError("output_percentile must be finite and between 0 and 1")
         if output_tokens is not None:
             output_tokens = validate_token_count(output_tokens)
-        # 一次判断只读一次 provider，用同一状态生成 threshold/source，避免决策字段不一致。
+        # 用同一状态生成 threshold/source，避免决策字段不一致。
         threshold, source = self._resolve_threshold()
         return {"output_tokens": output_tokens, "output_percentile": float(output_percentile),
                 "output_heavy": bool(output_percentile >= threshold),

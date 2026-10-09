@@ -32,7 +32,7 @@ def load_tokenizer():
     from transformers import AutoTokenizer
 
     TOKENIZER_DIR.mkdir(parents=True, exist_ok=True)
-    lock = TOKENIZER_DIR / "stage1_tokenizer_lock.json"
+    lock = TOKENIZER_DIR / "tokenizer_manifest.json"
     if lock.exists():
         # 已下载时先核对仓库、版本和文件哈希；文件改变或缺失直接报错，不静默换版本。
         manifest = json.loads(lock.read_text(encoding="utf-8"))
@@ -89,7 +89,7 @@ def load_tokenizer():
         "content_policy": "Concatenate type=text content parts in source order without inserting separators; null assistant tool-call content becomes empty text in history",
         "template_policy": "Official Qwen template unchanged, including its historical reasoning handling and tool serialization",
         "packages": {name: version(name) for name in (
-            "transformers", "tokenizers", "huggingface-hub", "pandas", "numpy", "pyarrow", "scipy", "matplotlib", "jinja2", "tzdata",
+            "transformers", "tokenizers", "huggingface-hub", "pandas", "numpy", "pyarrow", "jinja2", "tzdata",
         )},
         "production_token_counts": False,
     }

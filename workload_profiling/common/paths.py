@@ -10,8 +10,3 @@ CACHE = PACKAGE / "cache"
 TOKENIZER_DIR = DATA / "tokenizer" / "Qwen3-8B"
 POLICY_CONFIG = PACKAGE / "config" / "pressure_threshold_policy.json"
 DEFAULT_SOURCE = ROOT / "prompt数据" / "prompt回答数据包_3168条" / "prompt回答.jsonl"
-
-
-def relative(path) -> str:
-    path = Path(path).resolve()
-    return path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else str(path)
