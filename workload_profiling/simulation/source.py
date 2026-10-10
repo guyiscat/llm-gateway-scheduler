@@ -30,7 +30,7 @@ def read_prompt_requests(source, tokenizer, *, limit=None, progress=None):
                 model_parameters = {k: prompt[k] for k in ("tools", "tool_choice", "parallel_tool_calls",
                     "temperature", "top_p", "response_format", "stop", "seed", "user") if k in prompt}
                 request = WorkloadRequest(row.get("request_id", f"request_{index:06d}"), lengths["input_tokens"], output, index,
-                    messages=tuple(messages), target_model=row.get("target_model"),
+                    messages=tuple(messages), target_model=row.get("target_model", prompt.get("target_model", prompt.get("model"))),
                     predicted_output_tokens=row.get("predicted_output_tokens"),
                     max_tokens=prompt.get("max_tokens"), stream=prompt.get("stream"),
                     metadata={**row.get("metadata", {}), **model_parameters},
@@ -53,7 +53,7 @@ def read_length_requests(source, *, limit=None):
                 yield WorkloadRequest(row.get("request_id", f"request_{index:06d}"),
                                       row["input_tokens"], row["output_tokens"], index,
                     predicted_output_tokens=row.get("predicted_output_tokens"),
-                    target_model=row.get("target_model"), messages=tuple(row.get("messages", ())),
+                    target_model=row.get("target_model", row.get("model")), messages=tuple(row.get("messages", ())),
                     max_tokens=row.get("max_tokens"), stream=row.get("stream"),
                     slo=row.get("slo"), metadata=row.get("metadata", {}), api_type=row.get("api_type", "chat"),
                     **priority_fields(row))

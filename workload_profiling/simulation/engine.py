@@ -26,7 +26,7 @@ class RunResult:
 
 class SimulationRunner:
     def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None,
-                 executor=None, on_route=None):
+                 executor=None, on_route=None, on_request=None):
         self.config = config
         if classification_policy is not None and config.output_classification == "tokens":
             raise ValueError("Injected percentile policy requires percentile output_classification")
@@ -48,6 +48,10 @@ class SimulationRunner:
                 or inspect.iscoroutinefunction(getattr(on_route, "__call__", None))):
             raise TypeError("on_route must be a synchronous callback")
         self.on_route = on_route
+        if on_request is not None and (not callable(on_request) or inspect.iscoroutinefunction(on_request)
+                or inspect.iscoroutinefunction(getattr(on_request, "__call__", None))):
+            raise TypeError("on_request must be a synchronous callback")
+        self.on_request = on_request
         self._used = False
 
     def run(self, requests):
@@ -124,6 +128,12 @@ class SimulationRunner:
                     scheduler.flush()
                 else:
                     prepared = generator.prepare(item[1], now)
+                    if self.on_request is not None:
+                        output = self.on_request(prepared.request)
+                        if inspect.isawaitable(output):
+                            if inspect.iscoroutine(output):
+                                output.close()
+                            raise TypeError("on_request must not return an awaitable")
                     observations[prepared.request.request_id] = prepared.observation
                     sender.submit(prepared.request, scheduler)
                     item = next(scheduled, None)

@@ -44,6 +44,7 @@ class RouteOutputRecorder:
             raise ValueError("Route decision selected an unknown endpoint") from error
         record = {
             "request_id": decision.request.request_id,
+            "target_model": decision.request.target_model,
             "selected_endpoint_id": decision.selected_endpoint_id,
             "dispatched_at_ms": decision.dispatched_at_ms,
             "litellm_params": self.adapter.build_params(decision, endpoint),

@@ -6,10 +6,41 @@ import unittest
 from ..common.paths import ARTIFACTS
 from ..policies import PercentileReference
 from ..simulation.source import read_length_requests, read_prompt_requests
-from .support import FakeTokenizer, temporary_directory
+from ..simulation.data_processing import RequestParameterGenerator
+from .support import FakeTokenizer, temporary_directory, config
 
 
 class SourceTests(unittest.TestCase):
+    def test_request_model_precedence_and_default_in_both_source_formats(self):
+        cases = [({}, {}, "deepseek-flash"), ({"target_model": "row-model"}, {"model": "prompt-model"}, "row-model"),
+                 ({}, {"model": "prompt-model"}, "prompt-model"),
+                 ({}, {"target_model": "nested", "model": "prompt-model"}, "nested"),
+                 ({"target_model": None}, {}, "deepseek-flash")]
+        generator = RequestParameterGenerator(config())
+        with temporary_directory() as directory:
+            path = directory / "requests.jsonl"
+            for row_fields, prompt_fields, expected in cases:
+                row = {**row_fields, "prompt": {**prompt_fields, "messages": [{"role": "user", "content": "q"}]}, "response": "a"}
+                path.write_text(json.dumps(row), encoding="utf-8")
+                observation = next(read_prompt_requests(path, FakeTokenizer()))
+                self.assertEqual(generator.prepare(observation, 0).request.target_model, expected)
+            for fields, expected in (({}, "deepseek-flash"), ({"model": "alias"}, "alias"),
+                                     ({"model": "alias", "target_model": "explicit"}, "explicit")):
+                path.write_text(json.dumps({"input_tokens": 1, "output_tokens": 1, **fields}), encoding="utf-8")
+                observation = next(read_length_requests(path))
+                self.assertEqual(generator.prepare(observation, 0).request.target_model, expected)
+
+    def test_invalid_explicit_models_are_rejected_instead_of_replaced_by_default(self):
+        with temporary_directory() as directory:
+            path = directory / "requests.jsonl"
+            for value in ("", " ", 0, False, [], {}):
+                for kind in ("prompt", "lengths"):
+                    row = {"target_model": value, "input_tokens": 1, "output_tokens": 1,
+                           "prompt": {"messages": [{"role": "user", "content": "q"}]}, "response": "a"}
+                    path.write_text(json.dumps(row), encoding="utf-8")
+                    with self.subTest(value=value, kind=kind), self.assertRaisesRegex(ValueError, "source line 1"):
+                        list(read_length_requests(path) if kind == "lengths" else read_prompt_requests(path, FakeTokenizer()))
+
     def test_structured_messages_tools_and_controls_are_preserved(self):
         messages = [{"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]},
                     {"role": "assistant", "content": None, "tool_calls": [

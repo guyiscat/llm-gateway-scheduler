@@ -80,7 +80,7 @@ Python 类预设值是缺省项，文件明确设置的值覆盖它们。独立 
 | arrival_seed / random_min_interval_ms / random_max_interval_ms | 20261008 / 1 / 10 | 独立发送种子与随机整数间隔范围 |
 | priority_assignment / priority_seed | four_level / 20261008 | 保留旧分布；可选 binary 或 uniform |
 | high_priority_ratio | .1 | binary 模式中高优先级比例，范围 [0,1] |
-| target_model / stream / max_tokens | default / false / null | 请求缺省模型、流式标志和输出上限 |
+| target_model / stream / max_tokens | deepseek-flash / false / null | 请求缺省模型、流式标志和输出上限；显式请求值优先 |
 | slo | null | 可选 ttft_ms、tpot_ms、e2e_ms；上游已提供时优先使用 |
 | prediction_mode / predicted_output_tokens | oracle / 500 | oracle 使用录制答案长度；fixed 使用固定估计，上游显式预测始终优先 |
 | service_time | 5 / 2000 / 20 | 基础 ms、输入 tokens/ms、实际输出 tokens/ms |
@@ -91,17 +91,19 @@ fixed 第 i 条在 i×interval 到达。random 从 0 开始，后续间隔在闭
 
 二档生成按 priority_seed/request_id 固定哈希，与长度和读取顺序无关。旧 four_level 模拟仍按档位排序：4→核心1，其余→核心0；旧档位只留在模拟层。显式 priority=0/1 优先于生成器。uniform 不生成优先级，默认普通请求；保留显式旧档位。Python 显式旧1档应使用 priority_level_source="recorded"。
 
-端点静态文件不能包含模拟速度、当前并发或冷却。supported_models 匹配 target_model，api_types 匹配 api_type；context_limit 检查输入加 max_tokens（未设置则加预测输出）。默认模型名 default、价格0、地址/部署映射 null 都是沿用基线的模拟占位，需要真实接入时填写实际模型及部署。价格单位为每百万 token，输入/输出分别配置，所有端点应使用同一币种。
+端点静态文件不能包含模拟速度、当前并发或冷却。supported_models 匹配每条请求的 target_model，api_types 匹配 api_type；context_limit 检查输入加 max_tokens（未设置则加预测输出）。当前默认模型及默认端点支持列表均为 deepseek-flash。价格0、地址/部署映射 null 仍需按实际部署补充；模型字段不再使用 default 占位。价格单位为每百万 token，输入/输出分别配置，所有端点应使用同一币种。
 
 ## 请求格式与预测口径
 
 真实核心请求不需要实际输出，格式见开发接口。模拟 lengths 输入每行至少包含 input_tokens、output_tokens，后者代表录制实际输出；可以附加预测、核心优先级、消息、模型、SLO 等：
 
 ```json
-{"request_id":"urgent_001","input_tokens":100,"predicted_output_tokens":300,"output_tokens":2000,"priority":1,"target_model":"default","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":4096}
+{"request_id":"urgent_001","input_tokens":100,"predicted_output_tokens":300,"output_tokens":2000,"priority":1,"target_model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":4096}
 ```
 
 预测用于分类、排序及派发预留；实际输出只决定模拟服务时间和反馈。默认 oracle 是保留既有基线的离线先验，不是真实输出预测模型。改用 fixed 或提供上游预测后，应单独分析预测误差对容量等待和用量超限的影响。
+
+每条请求可以明确指定自己的 target_model。prompt 格式优先读取顶层 target_model，其次 prompt.target_model、prompt.model；lengths 格式读取 target_model，其次 model。缺失或 null 时才使用模拟配置默认值 deepseek-flash，显式非法值会拒绝。SchedulerRequest 始终有非空 target_model。发送入口无需 --model，按交付记录的 target_model 逐条发送；其他模型需同时配置端点支持列表与远端部署。
 
 高优先级跳过窗口但不绕过硬过滤。无模型/接口/上下文兼容端点时拒绝，健康/冷却/资源暂不可用则等待恢复。普通即时请求在重试时重新计算非繁忙集合；已进入窗口的请求不因负载降低而提前释放。请求不抢占在途执行。
 
@@ -118,11 +120,12 @@ ECDF 达门槛为输出重型，再与输入重型取 OR。分类在即时到达
 
 ## 本地路由记录
 
-默认唯一输出为 `workload_profiling/results/routes.jsonl`，UTF-8 JSONL，每行对应一次实际派发，按派发顺序排列。已选择但尚未获准派发、排队和拒绝请求不写入文件。
+默认路由交付文件为 `workload_profiling/results/routes.jsonl`，UTF-8 JSONL，每行对应一次实际派发，按派发顺序排列。已选择但尚未获准派发、排队和拒绝请求不写入路由文件；完整请求另写入 `results/logs/` 的运行日志。
 
 | 字段 | 含义 |
 | --- | --- |
 | request_id | 原请求 ID，便于关联上游 |
+| target_model | 标准请求携带的目标模型，发送层据此设置 model |
 | selected_endpoint_id | 路由最终选择的端点 |
 | dispatched_at_ms | 本次运行时间轴上的派发毫秒，模拟中为虚拟时间 |
 | litellm_params | LiteLLMAdapter.build_params 的调用参数字典 |
@@ -139,4 +142,21 @@ Get-Content -Encoding UTF8 workload_profiling/results/routes.jsonl -TotalCount 2
 
 模拟反馈仍用于释放并发、修正 TPM 和维护历史。RunResult 中的 requests/events/batches/summary 等仅供内存分析，CLI 只打印记录数、路径和拒绝数。配置通过原四份 JSON 或 CLI 修改。
 
+需要向部署的 LiteLLM 发送请求时，使用框架之外的 [独立接入工具](litellm_gateway.md)。默认只预览，显式 --send 才通过 SSH 发出 POST，并在终端显示完整响应正文；流式请求实时显示 SSE 事件。加 --session 可在一次登录后交互连续发送，端点组可省略且没有默认值。一次发送限制已移除，默认回放仍不会调用该工具。
+
+需要在一次命令中完成“模拟 N 条 → 发送到 LiteLLM”，使用集成入口：
+
+```powershell
+& .\.venv\Scripts\python.exe -m workload_profiling replay-send `
+  --limit 3 --ssh-target ubuntu@118.195.173.231
+```
+
+此命令启动时立即登录，之后才加载配置、数据和 tokenizer。原模拟完整运行后，按本次 routes.jsonl 的实际派发顺序发送，全部请求共用一个 SSH 隧道和 API Key。N 默认 3，可改 --limit；可传原 --source、--source-format、--config、--output，调度规则通过原配置修改。它直接发送真实请求，无须 --send；--dry-run 只模拟及校验，不登录、不发送。--endpoint-group 可省略，输出上限控制同接入工具。失败停止后续发送，无自动重试或续发；真实响应不回写模拟状态。
+
 容量等待可超过 max_wait_ms。RPM/TPM 按派发时刻精确满60秒过期；模拟没有新到达也会推进到恢复事件。真实网关需调用 tick 推进定时器，参见开发接口。超出全部兼容端点 TPM 硬上限的请求明确拒绝，CLI 有拒绝时退出码2。失败反馈另计 failed_requests；未知流式指标为 null。
+
+## 标准请求与真实响应日志
+
+replay 和 replay-send 默认在 results/logs 新建运行目录，终端显示路径。`--log-dir PATH` 可指定尚不存在的目录。每条请求单独保存到 `requests/<请求文件名>.jsonl`，各行只属于同一 request_id；`run.jsonl` 只记录运行开始、结束和运行级错误。scheduler_request 事件包含完整 SchedulerRequest；simulation_outcome 表示本地模拟状态；真实发送时另记录 litellm_send_started 的实际 payload、litellm_response 的 HTTP 状态及完整响应、SSE 片段和发送异常。被拒绝请求也有标准请求文件。默认请求文件名为 request_000000.jsonl 等，自定义 ID 使用安全文件名，原始 ID 保留在正文。
+
+每条日志即时落盘，中断不删除已写记录，凭据脱敏。普通 replay 或 --dry-run 没有真实响应事件；手动 gateway --send 记录发送与响应，不重建完整标准请求。记录格式和 PowerShell 读取方式见 [运行日志](litellm_gateway.md#运行日志)。

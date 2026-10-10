@@ -93,6 +93,12 @@ Pareto 尚未实现。接入点为 select_endpoint(request, endpoints, context)�
 
 ## 输出边界
 
-CLI 唯一写出的正式文件为 `results/routes.jsonl`，内容是实际派发的请求 ID、端点、时刻和 LiteLLM 参数。记录器在核心之外，不参与候选筛选、排序或状态维护；反馈保留在运行内存中。成功排空系统并验证输入未变后原子替换文件，失败保留上一份输出。固定参考 Parquet 与元数据仍是分类输入。
+路由交付正式文件为 `results/routes.jsonl`，内容是实际派发的请求 ID、模型、端点、时刻和 LiteLLM 参数。记录器在核心之外，不参与候选筛选、排序或状态维护；反馈保留在运行内存中。成功排空系统并验证输入未变后原子替换文件，失败保留上一份输出。CLI 另在 results/logs 为每次运行建立目录，requests 下每条请求单独一个 JSONL，保存该请求参数、模拟结果及实际发送响应；run.jsonl 保存运行级事件。逐条落盘且失败保留。固定参考 Parquet 与元数据仍是分类输入。
 
 详细模块图：[Mermaid 源码](figures/Endpoint模块输入输出与数据流_修正版.txt) · [SVG](figures/Endpoint模块输入输出与数据流_修正版.svg) · [PNG](figures/Endpoint模块输入输出与数据流_修正版.png)。
+
+框架之外的 `integrations.litellm_gateway` 可独立读取本地交付记录，通过 SSH 隧道发送请求给已部署的 LiteLLM。LiteLLMSession 在一次登录后复用隧道和凭据；--send --session 按交互选择连续发送。端点组可省略，无默认组，无跨运行发送次数限制。它不由核心或默认 replay 调用，不修改调度状态，也不代替在线执行反馈接口；见 [接入说明](litellm_gateway.md)。
+
+统一入口新增 replay-send，编排实现在 integrations.replay_litellm：创建运行日志并进入 LiteLLMSession → 登录后加载配置及本地数据 → 调用 simulation.cli.execute 模拟 N 条并观测完整标准请求 → 读取此次原子发布的 routes.jsonl → 校验全部参数 → 按派发记录顺序串行发送并记录响应 → 关闭会话。默认 N=3，可用 --limit 修改；--dry-run 跳过会话和实际发送。execute/SimulationRunner 仅增加可选 on_request 观测回调，Scheduler 和策略不修改。真实响应显示在终端并写入日志，不回写模拟反馈或影响虚拟调度时钟。
+
+每条 SchedulerRequest 自带 target_model，参数生成只对缺失值使用模拟配置默认 deepseek-flash。默认端点支持列表同步为 deepseek-flash，硬过滤仍按每条请求的模型匹配。交付 JSONL 额外保留 target_model，SSH 发送层将其直接用作 LiteLLM model；两个发送 CLI 均不再提供 --model，允许同一会话发送多个不同模型的请求。

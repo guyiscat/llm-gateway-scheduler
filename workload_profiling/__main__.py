@@ -6,6 +6,7 @@ import sys
 
 COMMANDS = {
     "replay": ("workload_profiling.simulation.cli", "回放请求并记录 LiteLLM 路由交付参数"),
+    "replay-send": ("workload_profiling.integrations.replay_litellm", "启动登录后模拟 N 条请求并发送到 LiteLLM"),
 }
 
 

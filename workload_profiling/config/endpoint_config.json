@@ -2,7 +2,7 @@
   "endpoints": [
     {
       "endpoint_id": "endpoint_a",
-      "supported_models": ["default"],
+      "supported_models": ["deepseek-flash"],
       "api_types": ["chat"],
       "api_base": null,
       "deployment_model": null,
@@ -15,7 +15,7 @@
     },
     {
       "endpoint_id": "endpoint_b",
-      "supported_models": ["default"],
+      "supported_models": ["deepseek-flash"],
       "api_types": ["chat"],
       "api_base": null,
       "deployment_model": null,
@@ -28,7 +28,7 @@
     },
     {
       "endpoint_id": "endpoint_c",
-      "supported_models": ["default"],
+      "supported_models": ["deepseek-flash"],
       "api_types": ["chat"],
       "api_base": null,
       "deployment_model": null,

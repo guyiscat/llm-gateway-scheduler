@@ -46,6 +46,8 @@ class WorkloadRequest:
             positive_integer(self.max_tokens, "max_tokens")
         if self.stream is not None and not isinstance(self.stream, bool):
             raise ValueError("stream must be bool or null")
+        if self.target_model is not None and (not isinstance(self.target_model, str) or not self.target_model.strip()):
+            raise ValueError("target_model must be a nonempty string or null")
         object.__setattr__(self, "messages", tuple(deepcopy(self.messages)))
         object.__setattr__(self, "metadata", deepcopy(self.metadata))
 

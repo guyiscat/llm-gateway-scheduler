@@ -11,7 +11,7 @@
   "arrival_seed": 20261008,
   "random_min_interval_ms": 1,
   "random_max_interval_ms": 10,
-  "target_model": "default",
+  "target_model": "deepseek-flash",
   "stream": false,
   "max_tokens": null,
   "slo": null,

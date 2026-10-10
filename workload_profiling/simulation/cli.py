@@ -8,6 +8,7 @@ from ..adapters import RouteOutputRecorder
 from ..common.io import sha256_file
 from ..common.paths import DEFAULT_SOURCE, RESULTS
 from ..common.tokenizer import load_tokenizer
+from ..common.run_log import RunLog
 from .config import CONFIG_PATH, load_config, positive_integer
 from .engine import SimulationRunner
 from .source import read_length_requests, read_prompt_requests
@@ -17,7 +18,7 @@ DEFAULT_OUTPUT = RESULTS / "routes.jsonl"
 
 def execute(config, *, source=DEFAULT_SOURCE, source_format="prompt", limit=None,
             output=DEFAULT_OUTPUT, tokenizer=None, progress=None,
-            strategy=None, batch_order=None):
+            strategy=None, batch_order=None, on_request=None):
     if limit is not None:
         positive_integer(limit, "limit")
     source, output = Path(source).resolve(), Path(output).resolve()
@@ -36,7 +37,7 @@ def execute(config, *, source=DEFAULT_SOURCE, source_format="prompt", limit=None
         raise ValueError("source_format must be prompt or lengths")
     with RouteOutputRecorder(output, (e.to_core() for e in config.endpoints)) as recorder:
         result = SimulationRunner(config, strategy=strategy, batch_order=batch_order,
-                                  on_route=recorder).run(requests)
+                                  on_route=recorder, on_request=on_request).run(requests)
         if sha256_file(source) != source_hash:
             raise ValueError("Source changed during replay")
     return result
@@ -48,6 +49,9 @@ def main():
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--source-format", choices=["prompt", "lengths"], default="prompt")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Local route handoff JSONL file")
+    logs = parser.add_mutually_exclusive_group()
+    logs.add_argument("--log-dir", type=Path, help="New run directory with one JSONL file per request")
+    logs.add_argument("--log-file", dest="log_dir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--limit", type=int, help="Replay the first N original records")
     parser.add_argument("--arrival-interval-ms", type=int)
     parser.add_argument("--arrival-mode", choices=["fixed", "burst", "random"])
@@ -109,9 +113,12 @@ def main():
         if slo:
             overrides["slo"] = (base.slo or {}) | slo
         config = replace(base, **overrides)
-        result = execute(config, source=args.source, source_format=args.source_format,
-                                  limit=args.limit, output=args.output,
-                                  progress=lambda n: print(f"Profiled {n} original requests", flush=True))
+        with RunLog(args.log_dir, mode="replay", protected_paths=(args.source, args.output)) as log:
+            print(f"Request log directory: {log.path}", flush=True)
+            result = execute(config, source=args.source, source_format=args.source_format,
+                             limit=args.limit, output=args.output, on_request=log.scheduler_request,
+                             progress=lambda n: print(f"Profiled {n} original requests", flush=True))
+            log.simulation_result(result)
     except (ValueError, TypeError, OSError) as error:
         parser.error(str(error))
     print(f"Recorded {sum(row['endpoint_id'] is not None for row in result.requests)} routes: {args.output.resolve()}")

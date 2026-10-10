@@ -95,7 +95,7 @@ class SimulationTests(unittest.TestCase):
             routes = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(len(routes), 3)
             for route in routes:
-                self.assertEqual(set(route), {"request_id", "selected_endpoint_id", "dispatched_at_ms", "litellm_params"})
+                self.assertEqual(set(route), {"request_id", "target_model", "selected_endpoint_id", "dispatched_at_ms", "litellm_params"})
                 self.assertEqual(route["litellm_params"]["metadata"]["force_endpoint"], route["selected_endpoint_id"])
             self.assertEqual(len(result.requests), 3)
 

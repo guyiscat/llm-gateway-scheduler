@@ -22,7 +22,7 @@ class EndpointConfig:
     output_tokens_per_ms: float = 20
     service_jitter_fraction: float = 0
     service_jitter_seed: int = 20261005
-    supported_models: tuple[str, ...] = ("default",)
+    supported_models: tuple[str, ...] = ("deepseek-flash",)
     api_types: tuple[str, ...] = ("chat",)
     api_base: str | None = None
     deployment_model: str | None = None
@@ -87,7 +87,7 @@ class SimulationConfig:
     arrival_seed: int = 20261008
     random_min_interval_ms: int = 1
     random_max_interval_ms: int = 10
-    target_model: str = "default"
+    target_model: str = "deepseek-flash"
     stream: bool = False
     max_tokens: int | None = None
     slo: dict | None = None

@@ -14,7 +14,7 @@ endpoints = load_endpoint_configs("workload_profiling/config/endpoint_config.jso
 settings = load_scheduler_config("workload_profiling/config/scheduler_config.json")
 scheduler = Scheduler(endpoints, settings)
 record = scheduler.submit_request(SchedulerRequest(
-    request_id="req_001", target_model="default",
+    request_id="req_001", target_model="deepseek-flash",
     messages=({"role": "user", "content": "hi"},),
     input_tokens=1200, predicted_output_tokens=500,
     max_tokens=1024, priority=1, stream=True, arrival_time=1000,
@@ -112,9 +112,9 @@ runner = SimulationRunner(config)
 result = runner.run([WorkloadRequest("sample", 100, 300)])
 ```
 
-WorkloadRequest 是离线实际观测，output_tokens 为实际输出；可附上 priority=0/1、predicted_output_tokens、messages、target_model、stream、max_tokens、slo、metadata。RequestParameterGenerator.prepare 生成标准请求和独立观测；SimulatedRequestSender.schedule 只决定到达时间，submit(request,scheduler) 使用同一入口。真实接入绕过这些模拟模块。
+WorkloadRequest 是离线实际观测，output_tokens 为实际输出；可附上 priority=0/1、predicted_output_tokens、messages、target_model、stream、max_tokens、slo、metadata。RequestParameterGenerator.prepare 生成标准请求和独立观测；target_model 非 null 时保留，否则使用 SimulationConfig.target_model，默认 deepseek-flash。显式非法模型值在观测校验时拒绝。SimulatedRequestSender.schedule 只决定到达时间，submit(request,scheduler) 使用同一入口。真实接入绕过这些模拟模块。
 
-SimulationRunner 每实例运行一次。可注入 strategy、batch_order、classification_policy、executor、on_route；executor.plan(decision,observation) 返回 ExecutionResult，便于模拟失败/限流；不另维护资源计数。on_route(decision) 在已预留的实际派发时同步调用，先于 executor.plan；不能是 async，也不能返回 awaitable。回调错误会终止回放，核心撤销当前在途预留。
+SimulationRunner 每实例运行一次。可注入 strategy、batch_order、classification_policy、executor、on_route、on_request；executor.plan(decision,observation) 返回 ExecutionResult，便于模拟失败/限流；不另维护资源计数。on_route(decision) 在已预留的实际派发时同步调用，先于 executor.plan；不能是 async，也不能返回 awaitable。回调错误会终止回放，核心将当前执行标为 request 失败并释放并发；未知实际用量仍保留估计，RPM 不立即撤回。on_request(request) 在 prepare 完成后、submit 前调用，获得带所有参数和默认值的 SchedulerRequest，之后被拒绝的请求也会被观测。它必须同步，参数按只读使用；回调异常会终止回放。
 
 CLI 的 execute 返回单个 RunResult，负责来源校验、tokenizer、回放与原子记录：
 
@@ -137,7 +137,67 @@ with RouteOutputRecorder("workload_profiling/results/routes.jsonl", endpoints) a
 
 RouteOutputRecorder 使用 EndpointConfig 和 LiteLLMAdapter.build_params 构建每行交付记录；可通过 adapter=LiteLLMAdapter(endpoint_resolver=...) 注入部署映射。未派发或拒绝请求没有记录。上下文正常退出时发布整份输出；异常保留原文件并删除临时文件。同一个记录器只用于一次串行运行；回调本身只负责记录，执行及反馈由调用方继续驱动。
 
-默认回放创建记录器并作为 SimulationRunner.on_route 注入。它记录实际派发顺序，不遍历运行结束后的到达顺序结果表。记录含 request_id、selected_endpoint_id、dispatched_at_ms、litellm_params；模拟完成事件、响应和状态快照不写入。默认端点仍为模拟占位；真实 LiteLLM 调用需配置部署，凭据由执行环境提供。
+默认回放创建记录器并作为 SimulationRunner.on_route 注入。它记录实际派发顺序，不遍历运行结束后的到达顺序结果表。记录含 request_id、target_model、selected_endpoint_id、dispatched_at_ms、litellm_params；模拟完成事件、响应和状态快照不写入。默认模型为 deepseek-flash，端点 ID 仍为模拟标识；真实部署绑定及凭据由执行环境提供。
+
+## 框架之外的会话发送
+
+[integrations/litellm_gateway.py](../workload_profiling/integrations/litellm_gateway.py) 独立读取 routes.jsonl 中所选的记录，映射远端模型，再通过 OpenSSH 隧道调用代理。端点组可选，无默认组；原记录有组时保留，显式参数可覆盖。它不导入 Scheduler、不改变模拟和四份配置，也不向已结束的模拟运行注入反馈。模块提供 read_route、build_payload、ssh_tunnel、send_request、LiteLLMSession；命令见 [接入说明](litellm_gateway.md)。
+
+send_request 每次调用执行一个 POST，返回 http_status、指定响应头、response_format（json/text/sse）和 response。普通响应解析为完整 JSON，非 JSON 保留文本；SSE 通过可选 on_response_chunk(text) 同步回调实时输出，完整原文也返回在 response 中。CLI 默认显示普通响应正文或实时流式事件及最终状态，HTTP 错误正文同样可见。响应不写入路由文件；一次发送标记已废弃，不再创建或检查。网络失败不自动重试或重连。
+
+LiteLLMSession 是同步上下文管理器，在进入时建立一次 SSH 隧道并读取一次 KEY（或隐藏输入），所有 send(payload) 复用该隧道和凭据；退出时关闭隧道并清空会话持有的凭据。会话外调用 send 会拒绝。可在后续外围实验驱动器中复用：
+
+```python
+from workload_profiling.integrations.litellm_gateway import LiteLLMSession, build_payload
+
+# route_records 由调用方提供；执行环境提供 KEY 和 SSH 认证。
+with LiteLLMSession("ubuntu@118.195.173.231") as session:
+    for route in route_records:
+        payload = build_payload(route)
+        result = session.send(payload)
+        # 调用方处理 result；如需实时 SSE，可传 on_response_chunk 回调。
+```
+
+命令行 --send --session 复用相同接口，每次输入请求 ID 时重新读取 JSONL；回车发送默认选择，/quit、EOF 或 Ctrl+C 关闭会话。连续发送为串行执行，不模拟到达速率，不去重，不自动消费整份路由文件。
+
+## 集成模拟后发送
+
+[integrations/replay_litellm.py](../workload_profiling/integrations/replay_litellm.py) 提供 replay_and_send 和 replay-send CLI。统一入口新增命令映射，simulation.cli.execute 和 SimulationRunner 只增加可选 on_request 观测接口，核心调度逻辑没有改动。replay_and_send 进入会话后才调用 load_config 和原 execute，模拟结束后用 iter_routes 按交付文件顺序读取、校验所有 payload，再复用同一会话串行发送。
+
+replay_and_send 和 build_payload 不接收全局 model 参数，CLI 也不再提供 --model。RouteOutputRecorder 显式保存 decision.request.target_model；build_payload 将该值作为真实请求 model。兼容旧交付文件中已有效的 litellm_params.model；旧 default 占位会拒绝。直接 LiteLLMAdapter 的 deployment_model/resolver 绑定能力保持原义，SSH 代理接入使用原请求的逻辑模型名。
+
+```python
+from workload_profiling.integrations.replay_litellm import replay_and_send
+
+result = replay_and_send(
+    ssh_target="ubuntu@118.195.173.231", limit=3,
+    # 可传 config_path、source、source_format、output。
+)
+print(result.prepared_count, result.sent_count)
+```
+
+返回 ReplayDeliveryResult，包含原 RunResult（simulation）、prepared_count、sent_count、dry_run 和日志目录 log_path。可注入 tokenizer、progress、on_response(route, response)、log_dir；旧 log_file 兼容转换为去掉 .jsonl 后缀的目录，不能与 log_dir 同传。响应先记录日志，再交给 on_response，未提供时在终端显示完整普通响应，SSE 默认实时显示。dry_run=True 不创建会话，只模拟及校验；它仍发布路由输出及逐请求日志，sent_count=0。endpoint_groups=None 不补入默认组。
+
+## 日志接口
+
+RunLog 位于 common/run_log.py，默认在 results/logs 创建新运行目录，path 表示目录、run_file 表示 run.jsonl。record(event, request_id=..., **fields) 按请求分文件写入并立即 flush/fsync；没有 request_id 的事件写入 run.jsonl。request_path(request_id) 返回该请求的文件路径，request_filename 处理特殊字符、Windows 保留名和过长 ID，防止路径穿越与文件名混淆。scheduler_request(request) 保存 asdict(request) 的完整快照，simulation_result(result) 保存每条模拟状态。schema_version=2，sequence 为本次运行的全局事件顺序，可跨文件重建顺序。每条事件写完关闭文件，避免大规模回放耗尽文件句柄。目录独占创建，旧目录拒绝；异常退出保留已写事件并在 run.jsonl 记录 run_finished 及请求文件数量。凭据字段与 register_secret 注册的认证值脱敏；消息、SLO、metadata、真实回答和用量均保留。
+
+```python
+from workload_profiling.common.run_log import RunLog
+from workload_profiling.simulation.cli import execute
+
+with RunLog(mode="replay") as log:
+    result = execute(config, on_request=log.scheduler_request)
+    log.simulation_result(result)
+print(log.path)
+print(log.request_path("request_000000"))
+```
+
+execute 的 Python API 默认不创建日志文件，调用方通过 on_request 注入记录器；CLI 默认启用。LiteLLMSession 可传 run_log=log，并用 send(payload, request_id=..., selected_endpoint_id=...) 关联真实事件。send_request 是底层单次 HTTP 函数，本身不创建日志。会话在发送前记录真实 payload，收到 SSE 时记录片段，正常返回后记录完整响应；异常记录发送失败且不重试。使用同一 RunLog 注入模拟和会话即可关联完整数据流，replay_and_send 已完成这项编排。读取示例见 [运行日志](litellm_gateway.md#运行日志)。
+
+DeliveryError 表示真实发送失败或结果未知，携带 request_id、successful_count、pending_count，停止后续请求并关闭会话；pending_count 不包含刚失败的请求。HTTP 错误正文先显示或交给 on_response，网络失败不重试。路由文件已经发布，异常不会删除。重新调用会重新模拟和发送，不是断点续发；取消、输入错误和认证失败也会正常释放已打开的会话。
+
+这个编排复用完整模拟，真实发送发生在模拟结束之后，不是替换 SimulatedExecutor，也不会向已结束的 Scheduler 写入真实反馈。limit 为输入记录上限，拒绝请求没有路由交付，发送条数可小于 limit。测试用真实模拟和假 HTTP 验证 3/N 条派发顺序、虚拟结果与原 execute 一致、配置加载前认证、单会话复用、错误停止及文件保留。
 
 ## 验证
 
@@ -145,6 +205,6 @@ RouteOutputRecorder 使用 EndpointConfig 和 LiteLLMAdapter.build_params 构建
 & .\.venv\Scripts\python.exe -m unittest discover -s workload_profiling/tests -t .
 ```
 
-当前 128 项测试覆盖三条路径、模型池繁忙与硬容量区别、过滤/恢复、滚动额度、反馈匹配/迟到/实际用量、缓存边界、优先级、发送模式、策略协议、分层配置、LiteLLM参数/流式/错误、tokenizer 依赖，以及路由记录的交付内容、派发顺序、拒绝遗漏和原子失败保护。
+测试覆盖三条路径、模型池繁忙与硬容量区别、过滤/恢复、滚动额度、反馈匹配/迟到/实际用量、缓存边界、优先级、发送模式、策略协议、分层配置、LiteLLM参数/流式/错误、tokenizer 依赖、路由记录，以及外部接入的可选组映射、单条选择、请求上限、重复发送、会话认证复用、退出清理与失败不重试。单元测试使用假 HTTP 响应，不产生模型费用。
 
-当前主线保留原始请求、冻结参考、tokenizer 缓存、四份有效配置、核心算法及模拟反馈。网页服务、HTML 可视化、报表导出与旧网页结果已删除；本地结果只记录路由交付参数。
+当前主线保留原始请求、冻结参考、tokenizer 缓存、四份有效配置、核心算法及模拟反馈。网页服务、HTML 可视化、报表导出与旧网页结果已删除；本地保存路由交付参数、逐请求日志及运行级记录。
