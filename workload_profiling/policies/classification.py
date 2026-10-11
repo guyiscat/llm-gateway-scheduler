@@ -66,14 +66,18 @@ class OutputPercentileClassifier:
             "reference": {"values": self.reference.values.tolist(), "counts": self.reference.counts.tolist()}})
 
     def classify_batch(self, requests, endpoints, ready_count, now_ms, batch_id):
-        slots = sum(e.concurrency_limit for e in endpoints)
+        capacity_known = all(e.concurrency_limit is not None for e in endpoints)
+        slots = sum(e.concurrency_limit for e in endpoints) if capacity_known else None
         occupied = sum(e.concurrency for e in endpoints)
-        free = slots - occupied
+        free = slots - occupied if slots is not None else None
         # Already arrived work only: existing ready plus the batch about to release.
-        excess = max(0, ready_count + len(requests) - free)
-        utilization = occupied / slots
+        excess = max(0, ready_count + len(requests) - free) if free is not None else None
+        utilization = occupied / slots if slots else None
         rules = self.profile["pressure_rules"]
-        if excess >= slots * rules["critical_excess_ratio"]:
+        if not capacity_known:
+            # Unknown remote capacity supplies no evidence for concurrency pressure.
+            state = CongestionState.NORMAL
+        elif excess >= slots * rules["critical_excess_ratio"]:
             state = CongestionState.CRITICAL
         elif excess > 0 or utilization >= rules["busy_concurrency_threshold"]:
             state = CongestionState.BUSY

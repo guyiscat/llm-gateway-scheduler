@@ -66,6 +66,10 @@ class LiteLLMAdapter:
             params["max_tokens"] = request.max_tokens
         metadata = deepcopy(request.metadata)
         metadata.update(deepcopy(decision.metadata))
+        resolved_metadata = params.get("metadata", {})
+        if not isinstance(resolved_metadata, dict):
+            raise ValueError("Endpoint resolver metadata must be an object")
+        metadata.update(deepcopy(resolved_metadata))
         metadata["force_endpoint"] = decision.selected_endpoint_id
         params["metadata"] = metadata
         for name in ("temperature", "top_p", "tools", "tool_choice", "parallel_tool_calls",

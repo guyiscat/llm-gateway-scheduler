@@ -56,6 +56,15 @@ class LiteLLMAdapterTests(unittest.TestCase):
         self.assertEqual((result.actual_input_tokens, result.actual_output_tokens), (6, 7))
         self.assertIsNone(result.ttft_ms)
 
+    def test_resolver_metadata_binds_endpoint_without_losing_request_fields(self):
+        adapter = LiteLLMAdapter(lambda ep, req: {"model": req.target_model,
+            "metadata": {"endpoint_group": ["official"]}})
+        request = replace(self.request, metadata={"endpoint_group": ["other"], "temperature": .3})
+        params = adapter.build_params(replace(self.decision, request=request), self.endpoint)
+        self.assertEqual(params["metadata"], {"endpoint_group": ["official"], "temperature": .3, "force_endpoint": "a"})
+        self.assertEqual(params["temperature"], .3)
+        self.assertEqual(request.metadata["endpoint_group"], ["other"])
+
     def test_stream_ttft_ignores_role_chunk_and_tpot_uses_known_token_count(self):
         decision = replace(self.decision, request=replace(self.request, stream=True))
         chunks = [{"choices": [{"delta": {"role": "assistant"}}]},

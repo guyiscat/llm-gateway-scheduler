@@ -99,6 +99,8 @@ Pareto 尚未实现。接入点为 select_endpoint(request, endpoints, context)�
 
 框架之外的 `integrations.litellm_gateway` 可独立读取本地交付记录，通过 SSH 隧道发送请求给已部署的 LiteLLM。LiteLLMSession 在一次登录后复用隧道和凭据；--send --session 按交互选择连续发送。端点组可省略，无默认组，无跨运行发送次数限制。它不由核心或默认 replay 调用，不修改调度状态，也不代替在线执行反馈接口；见 [接入说明](litellm_gateway.md)。
 
-统一入口新增 replay-send，编排实现在 integrations.replay_litellm：创建运行日志并进入 LiteLLMSession → 登录后加载配置及本地数据 → 调用 simulation.cli.execute 模拟 N 条并观测完整标准请求 → 读取此次原子发布的 routes.jsonl → 校验全部参数 → 按派发记录顺序串行发送并记录响应 → 关闭会话。默认 N=3，可用 --limit 修改；--dry-run 跳过会话和实际发送。execute/SimulationRunner 仅增加可选 on_request 观测回调，Scheduler 和策略不修改。真实响应显示在终端并写入日志，不回写模拟反馈或影响虚拟调度时钟。
+统一入口 replay-send，编排实现在 integrations.replay_litellm：创建运行日志并进入 LiteLLMSession → 登录后 EndpointMonitor 获取并筛选 /model/info → 从 endpoint_state.json 加载实际部署及原调度/模拟配置 → 调用 simulation.cli.execute 模拟 N 条并观测完整标准请求，注入适配器记录模型及端点组 → 读取此次原子发布的 routes.jsonl → 校验参数及所选端点的唯一组绑定 → 按派发记录顺序串行发送、维护真实状态并记录响应 → 停止维护并关闭会话。默认 N=3，可用 --limit 修改；--dry-run 使用离线端点配置，跳过会话和实际发送。调度策略和模拟事件循环继续复用；容量相关类型允许 null，未知容量不参与该项判断。
 
-每条 SchedulerRequest 自带 target_model，参数生成只对缺失值使用模拟配置默认 deepseek-flash。默认端点支持列表同步为 deepseek-flash，硬过滤仍按每条请求的模型匹配。交付 JSONL 额外保留 target_model，SSH 发送层将其直接用作 LiteLLM model；两个发送 CLI 均不再提供 --model，允许同一会话发送多个不同模型的请求。
+每条 SchedulerRequest 自带 target_model，参数生成只对缺失值使用模拟配置默认 deepseek-flash。硬过滤按每条请求的模型匹配；实际部署支持列表来自 model/info。交付 JSONL 和 HTTP model 保留公共 target_model，selected_endpoint_id 保留部署 ID，发现模式通过所选端点的唯一 metadata.endpoint_group 绑定。当前 policy shell 不接受部署 ID 作为公共模型名。两个发送 CLI 均不再提供 --model，允许同一会话发送多个不同模型的请求。
+
+endpoint_monitor/catalog.py 负责字段映射；service.py 负责周期维护、实际请求预留/反馈和原子快照；cli.py 提供只读的 endpoint-watch。复用核心 EndpointStateManager 的计数、健康与历史算法，真实管理器采用 Unix 毫秒；模拟管理器继续使用虚拟毫秒，互不写入。刷新到期先暂停新发送，等在途请求全部结束再拉取，更新结束后恢复；反馈可以继续执行，历史用量不清零。当前观测范围是本进程，不代表全网关负载。详见 [端点状态维护](endpoint_state.md)。

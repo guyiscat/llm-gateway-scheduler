@@ -151,7 +151,9 @@ Get-Content -Encoding UTF8 workload_profiling/results/routes.jsonl -TotalCount 2
   --limit 3 --ssh-target ubuntu@118.195.173.231
 ```
 
-此命令启动时立即登录，之后才加载配置、数据和 tokenizer。原模拟完整运行后，按本次 routes.jsonl 的实际派发顺序发送，全部请求共用一个 SSH 隧道和 API Key。N 默认 3，可改 --limit；可传原 --source、--source-format、--config、--output，调度规则通过原配置修改。它直接发送真实请求，无须 --send；--dry-run 只模拟及校验，不登录、不发送。--endpoint-group 可省略，输出上限控制同接入工具。失败停止后续发送，无自动重试或续发；真实响应不回写模拟状态。
+此命令启动时立即登录，再读取调度设置、获取 `/model/info` 并建立 `results/endpoints/endpoint_state.json`，从该文件加载实际部署，随后读取数据和 tokenizer；真实模式不读取旧 endpoint_config.json。原模拟完整运行后，按本次 routes.jsonl 的实际派发顺序发送，全部请求共用一个 SSH 隧道和 API Key。N 默认 3，可改 --limit；可传原 --source、--source-format、--config、--output，调度规则通过原配置修改。它直接发送真实请求，无须 --send；--dry-run 只模拟及校验，使用离线配置，不登录、不发送。--endpoint-group 可省略，输出上限控制同接入工具。失败停止后续发送，无自动重试或续发；真实响应更新独立的真实端点状态，不回写模拟状态。
+
+`--endpoint-update-interval SECONDS` 控制更新间隔，默认 30 秒；到期时暂停新发送，等本进程在途请求全部结束后拉取，刷新结束后恢复，不清零历史用量。`--endpoint-state-dir PATH` 指定原始响应和状态文件目录。`endpoint-watch --ssh-target USER@HOST --once` 可只登录并获取一次端点信息，不调用模型。缺失 TPM、并发等上限保留未知，不沿用模拟容量。详见 [端点状态维护](endpoint_state.md)。
 
 容量等待可超过 max_wait_ms。RPM/TPM 按派发时刻精确满60秒过期；模拟没有新到达也会推进到恢复事件。真实网关需调用 tick 推进定时器，参见开发接口。超出全部兼容端点 TPM 硬上限的请求明确拒绝，CLI 有拒绝时退出码2。失败反馈另计 failed_requests；未知流式指标为 null。
 

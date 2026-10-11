@@ -173,7 +173,7 @@ class RunLogTests(unittest.TestCase):
                     patch.object(gateway, "build_opener", return_value=SimpleNamespace(open=lambda *a, **kw:
                         Response(b'{"choices":[{"message":{"content":"answer"}}]}'))):
                 result = bridge.replay_and_send(ssh_target="ubuntu@example.com", source=source,
-                    source_format="lengths", output=output, log_file=path)
+                    source_format="lengths", output=output, log_file=path, live_endpoints=False)
             ssh.assert_called_once()
             events = read_log(path)
             requests = [row for row in events if row["event"] == "scheduler_request"]

@@ -31,7 +31,7 @@ python -m venv .venv
   --limit 3 --ssh-target ubuntu@118.195.173.231
 ```
 
-`--limit N` 控制模拟输入条数，默认 3；拒绝请求不发送，数据不足时只处理已有记录。`--endpoint-group` 可省略，没有默认组。真实回答或流式事件显示在终端并写入运行日志，路由交付记录仍保存到默认 routes.jsonl；可用 --output 另存。此命令直接执行真实发送，不需要 --send 或逐条输入请求 ID；--dry-run 则只模拟和校验，不登录、不调用模型。
+`--limit N` 控制模拟输入条数，默认 3；拒绝请求不发送，数据不足时只处理已有记录。真实模式登录后获取 `/model/info`，从筛选后的状态文件加载端点，不使用旧模拟端点配置；`--endpoint-update-interval SECONDS` 设置维护间隔，默认 30 秒。到期后暂停新发送，等本进程在途请求全部结束再拉取，更新结束后恢复发送，RPM/TPM 历史不会清零。`--endpoint-group` 可省略，没有默认组。真实回答或流式事件显示在终端并写入运行日志，路由交付记录仍保存到默认 routes.jsonl；可用 --output 另存。此命令直接执行真实发送，不需要 --send 或逐条输入请求 ID；--dry-run 则只模拟和校验，不登录、不调用模型。
 
 ```powershell
 & .\.venv\Scripts\python.exe -m workload_profiling replay-send `
@@ -39,6 +39,8 @@ python -m venv .venv
 ```
 
 模拟仍使用虚拟时钟和模拟反馈；真实发送在整次模拟完成后串行执行，不把真实响应写回已结束的调度器。详细参数、登录与失败处理见 [LiteLLM 接入说明](docs/litellm_gateway.md)。
+
+真实 HTTP model 使用请求的公共 target_model（例如 deepseek-flash）；selected_endpoint_id 用于本地状态与响应核对，所选端点的唯一 tag 自动写入 metadata.endpoint_group。命令行组参数仍可省略，无固定默认组。当前远端 policy shell 不接受部署 ID 作为模型名；旧 ID 直传记录应重新生成。HTTP 错误后停止剩余发送且不自动重试，日志会保留。
 
 ## 本地路由输出
 
@@ -80,6 +82,7 @@ workload_profiling/
   policies/                    可替换排序/路由、冻结ECDF和输出分类策略
   adapters/                    LiteLLM参数转换、路由记录、执行反馈适配
   integrations/                LiteLLM SSH 会话、交互发送、模拟后发送编排
+  endpoint_monitor/            已登录端点发现、字段筛选与周期状态维护
   simulation/                  来源、参数生成、fixed/random/burst发送、虚拟执行
   common/                      消息规范化、tokenizer、I/O与统计
   config/                      端点、调度、模拟三层配置及动态分类策略
@@ -88,10 +91,12 @@ workload_profiling/
   data/tokenizer/              可重用的固定tokenizer缓存
   results/routes.jsonl         本地 LiteLLM 路由交付记录
   results/logs/<运行>/         run.jsonl 与 requests/ 下逐请求日志
+  results/endpoints/           原始端点响应与维护后的 endpoint_state.json
   cache/                       可重建的本地验证缓存
 ```
 
 - [使用指南](docs/guide.md)：运行、配置、输入与结果。
+- [端点状态维护](docs/endpoint_state.md)：登录后发现端点、状态文件、维护周期与观测范围。
 - [架构](docs/architecture.md)：请求流程、容量与模块边界。
 - [开发接口](docs/development.md)：Python API、策略扩展与路由记录接口。
 - [LiteLLM 外部接入](docs/litellm_gateway.md)：SSH 会话复用、路由预览、多次发送、可选端点组与终端响应展示。

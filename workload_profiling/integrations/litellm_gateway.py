@@ -86,6 +86,10 @@ def build_payload(route, *, endpoint_groups=None, smoke=False, max_tokens=None, 
     if "endpoint_group" in metadata and (not isinstance(groups, list) or not groups or
             any(not isinstance(g, str) or not g.strip() for g in groups)):
         raise ValueError("endpoint_group must be a nonempty list of nonempty strings")
+    # Old ID-as-model handoffs need a public model and an explicit group before
+    # they can safely be sent through the deployed policy shell.
+    if params.get("model") == route.get("selected_endpoint_id") and (not route.get("target_model") or groups is None):
+        raise ValueError("Legacy deployment-ID handoff lacks public-model/group binding; regenerate routes with replay-send")
     metadata.pop("force_endpoint", None)
     if not metadata:
         payload.pop("metadata", None)
@@ -142,7 +146,7 @@ def send_request(payload, api_key, *, port, timeout=60, opener=None, on_response
         status = response.code
         all_headers = {name.lower(): value for name, value in response.headers.items()}
         headers = {name: value for name, value in all_headers.items()
-                   if name in {"x-litellm-model-api-base", "x-litellm-attempted-retries"}}
+                   if name in {"x-litellm-model-api-base", "x-litellm-attempted-retries", "x-litellm-model-id"}}
         content_type = all_headers.get("content-type", "").lower()
         streaming = content_type.startswith("text/event-stream") or (
             payload.get("stream", False) and 200 <= status < 300 and not content_type)
@@ -212,6 +216,17 @@ class LiteLLMSession:
         self._stack = self._port = self._key = self._opener = None
         if stack is not None:
             return stack.__exit__(*exception)
+
+    def get_model_info(self):
+        """Authenticated metadata GET through the already logged-in tunnel."""
+        if self._stack is None:
+            raise RuntimeError("Session is not open")
+        request = Request(f"http://127.0.0.1:{self._port}/model/info", method="GET",
+                          headers={"Authorization": f"Bearer {self._key}", "Accept": "application/json"})
+        with self._opener.open(request, timeout=self.timeout) as response:
+            if not 200 <= response.code < 300:
+                raise OSError(f"LiteLLM model info HTTP {response.code}")
+            return json.loads(response.read().decode("utf-8"))
 
     def send(self, payload, *, on_response_chunk=None, request_id=None, selected_endpoint_id=None):
         if self._stack is None:

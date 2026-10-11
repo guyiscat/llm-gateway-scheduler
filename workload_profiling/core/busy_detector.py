@@ -9,10 +9,10 @@ class EndpointLoad:
     endpoint_id: str
     busy: bool
     reasons: tuple[str, ...]
-    rpm_utilization: float
-    tpm_utilization: float
+    rpm_utilization: float | None
+    tpm_utilization: float | None
     concurrency: int
-    concurrency_busy_at: int
+    concurrency_busy_at: int | None
 
 
 @dataclass(frozen=True)
@@ -39,16 +39,16 @@ class LoadMonitor:
         self.concurrency_threshold = getattr(config, "busy_concurrency_threshold", None)
 
     def endpoint_load(self, endpoint: EndpointView):
-        concurrency_busy_at = endpoint.concurrency_limit - self.concurrency_reserve
-        if self.concurrency_threshold is not None:
+        concurrency_busy_at = None if endpoint.concurrency_limit is None else endpoint.concurrency_limit - self.concurrency_reserve
+        if endpoint.concurrency_limit is not None and self.concurrency_threshold is not None:
             import math
             concurrency_busy_at = math.ceil(endpoint.concurrency_limit * self.concurrency_threshold)
         reasons = []
-        if endpoint.rpm_utilization >= self.rpm_threshold:
+        if endpoint.rpm_utilization is not None and endpoint.rpm_utilization >= self.rpm_threshold:
             reasons.append("rpm")
-        if endpoint.tpm_utilization >= self.tpm_threshold:
+        if endpoint.tpm_utilization is not None and endpoint.tpm_utilization >= self.tpm_threshold:
             reasons.append("tpm")
-        if endpoint.concurrency >= concurrency_busy_at:
+        if concurrency_busy_at is not None and endpoint.concurrency >= concurrency_busy_at:
             reasons.append("concurrency")
         return EndpointLoad(endpoint.endpoint_id, bool(reasons), tuple(reasons),
                             endpoint.rpm_utilization, endpoint.tpm_utilization,

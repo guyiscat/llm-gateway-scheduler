@@ -9,9 +9,9 @@ from ..common.validation import finite_number, positive_integer
 @dataclass(frozen=True)
 class EndpointConfig:
     endpoint_id: str
-    rpm_limit: int
-    tpm_limit: int
-    concurrency_limit: int
+    rpm_limit: int | None
+    tpm_limit: int | None
+    concurrency_limit: int | None
     supported_models: tuple[str, ...] = ("default",)
     api_types: tuple[str, ...] = ("chat",)
     api_base: str | None = None
@@ -24,7 +24,8 @@ class EndpointConfig:
         if not isinstance(self.endpoint_id, str) or not self.endpoint_id.strip():
             raise ValueError("endpoint_id must be nonempty")
         for name in ("rpm_limit", "tpm_limit", "concurrency_limit"):
-            positive_integer(getattr(self, name), name)
+            if getattr(self, name) is not None:
+                positive_integer(getattr(self, name), name)
         for name in ("supported_models", "api_types"):
             values = getattr(self, name)
             if isinstance(values, str) or not values or any(not isinstance(v, str) or not v.strip() for v in values):

@@ -65,7 +65,7 @@ class ReplayLiteLLMTests(unittest.TestCase):
             yield SimpleNamespace(trace=trace, calls=calls, ssh=ssh, prompt=prompt)
 
     def run_bridge(self, source, output, **overrides):
-        options = {"log_file": output.parent / "run_log.jsonl"} | overrides
+        options = {"log_file": output.parent / "run_log.jsonl", "live_endpoints": False} | overrides
         return bridge.replay_and_send(ssh_target="ubuntu@example.com",
             source=source, source_format="lengths", output=output, **options)
 

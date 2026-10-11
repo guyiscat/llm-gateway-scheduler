@@ -27,7 +27,7 @@ class Scheduler:
             raise ValueError("Scheduler and shared state manager must use the same settings")
         self.states = state_manager or EndpointStateManager(endpoints, self.config)
         if self.config.busy_concurrency_threshold is None and any(
-                self.config.busy_concurrency_reserve >= e.concurrency_limit for e in self.states.configs.values()):
+                e.concurrency_limit is not None and self.config.busy_concurrency_reserve >= e.concurrency_limit for e in self.states.configs.values()):
             raise ValueError("busy_concurrency_reserve must be smaller than every endpoint concurrency_limit")
         self.endpoint_filter = endpoint_filter or EndpointFilter()
         self.admission = AdmissionPolicy(self.config)
@@ -171,7 +171,7 @@ class Scheduler:
         if not pool.compatible:
             self._reject(record, "no_compatible_endpoint")
             return True
-        if all(request.total_tokens > e.tpm_limit for e in pool.compatible):
+        if all(e.tpm_limit is not None and request.total_tokens > e.tpm_limit for e in pool.compatible):
             self._reject(record, "tokens_exceed_every_endpoint_tpm_limit")
             return True
         eligible = self.admission.routing_endpoints(pool.eligible, record.endpoint_scope)

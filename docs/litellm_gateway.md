@@ -16,11 +16,13 @@
 该命令直接执行真实发送，不需要 --send、--session 或手动逐条选择。执行顺序为：
 
 1. 解析并校验启动参数，然后 LiteLLMSession 建立 SSH 隧道。输入一次 SSH 密码和一次 API Key；已配置密钥认证或 KEY 环境变量时使用现有认证。
-2. 登录完成后才调用 load_config，再读取本地数据集、加载 tokenizer 并调用原 simulation.cli.execute。不会等到第一条请求派发才登录。
+2. 登录后读取调度设置，由 EndpointMonitor 使用同一会话获取 /model/info，保存原始响应和筛选后的 endpoint_state.json，再注入 load_config；真实模式不读取旧模拟端点文件。随后读取数据集、加载 tokenizer 并调用原 simulation.cli.execute。
 3. 原有参数生成、优先级、繁忙判断、即时/窗口调度、排序、路由和模拟反馈正常运行。RouteOutputRecorder 依实际派发顺序原子发布 routes.jsonl。
 4. iter_routes 读取刚生成的交付记录，build_payload 校验全部真实调用参数。任何一条参数非法都会在第一个 POST 前终止。
-5. 按记录顺序调用同一 session.send，逐条发送原始消息及控制参数、显示响应。不会重新登录，不会把请求改成 hi。
-6. 全部发送完成或运行异常时关闭 SSH 隧道，清空会话持有的 API Key。
+5. 按记录顺序由 EndpointMonitor 将公共模型名及所选端点的唯一 tag 绑定为 metadata.endpoint_group，登记请求并调用同一 session.send；响应 usage 用于更新真实 RPM/TPM、并发及历史，响应内容仍写入逐请求日志。不会重新登录，不会把请求改成 hi。
+6. 全部发送完成或运行异常时先停止维护线程，再关闭 SSH 隧道，清空会话持有的 API Key。
+
+`--endpoint-update-interval SECONDS` 设置维护间隔，默认 30 秒；到期后暂停新发送，等待本进程所有在途请求（含流式请求）结束再拉取，刷新成功或失败后恢复发送，不清零历史 RPM/TPM。`--endpoint-state-dir PATH` 设置保存目录，默认 results/endpoints。缺失容量为 null，可通过显式容量覆盖参数设置已确认的本地控制值。仅查询信息可运行 `endpoint-watch --ssh-target USER@HOST --once`，没有模型调用。详见 [端点状态维护](endpoint_state.md)。
 
 --limit 是输入记录数的上限；输入不足时只处理已有记录，拒绝或未派发请求不调用模型。默认输出仍为 workload_profiling/results/routes.jsonl；--output 可指定其他 JSONL。--source、--source-format 和 --config 复用原数据来源和配置机制，调度、到达模式、流式默认值等通过同一配置文件修改。
 
@@ -35,7 +37,7 @@
 
 dry-run 同样执行模拟、发布路由文件并校验调用参数，发送数为 0。真实发送中任一 HTTP 错误、网络错误或超时会显示结果并停止后续请求，关闭隧道、返回退出码 2；已经发布的路由文件保留。不会重试、自动恢复或从上次位置续发，重新执行命令会重新模拟并发送所选记录。Ctrl+C 或 EOF 关闭会话并返回退出码 130。拒绝请求会被报告，CLI 最终返回退出码 2。
 
-真实请求在模拟结束后串行发送，不按虚拟到达时间等待，也不将真实 usage、延迟或错误反馈写回模拟调度器。此入口用于“已有模拟路由 → 真实接口交付”验证；实时调度反馈仍使用下文所述在线接口。当前模拟 endpoint_a/b/c 尚未与远端部署逐一绑定，真实模型由请求的 target_model 指定，可选组由调用方提供。
+真实请求在模拟结束后串行发送，不按虚拟到达时间等待，也不将真实 usage、延迟或错误反馈写回模拟调度器。此入口用于“已有模拟路由 → 真实接口交付”验证；实时调度反馈仍使用下文所述在线接口。离线 endpoint_a/b/c 是模拟标识，真实 replay-send 使用发现的部署 ID 维护状态，HTTP 模型由请求的 target_model 指定，选中端点通过唯一 tag 绑定。
 
 ## 每条请求的模型数据流
 
@@ -46,12 +48,12 @@ dry-run 同样执行模拟、发布路由文件并校验调用参数，发送数
 → SchedulerRequest.target_model
 → 硬过滤：端点 supported_models 匹配该请求
 → 路由交付记录 target_model
-→ build_payload：LiteLLM 请求 model = 该记录 target_model
+→ build_payload：HTTP model 来自 target_model，发现的端点绑定使用唯一 endpoint_group
 ```
 
 prompt 来源优先读取记录顶层 target_model，其次 prompt.target_model，最后 prompt.model；选中的值缺失或 null 时使用模拟配置默认值。lengths 来源优先读取 target_model，其次 model。显式空字符串、空白或非字符串会拒绝，不会被默认值覆盖。不同请求可使用不同模型，必须有兼容的本地端点配置及远端模型部署。
 
-新路由文件明确保存 target_model；它是 SSH 代理发送时的权威模型名，优先于适配器记录的部署别名。旧文件没有该字段时可以沿用已有 litellm_params.model，但旧占位值 default 无法发送，需要按新配置重新回放生成。发送层不凭空补模型，也不统一覆盖整批请求。
+新路由文件明确保存 target_model；发现模式下 litellm_params.model 为同一公共模型名，metadata.endpoint_group 保存选中端点的唯一 tag，selected_endpoint_id 仍为部署 ID。你的 policy shell 曾拒绝把部署 ID 当作模型名，因此旧 ID 直传记录缺少公共模型/组绑定时要求重新生成。其他旧模拟记录仍按 target_model 发送；旧文件没有 target_model 时可沿用已有有效 litellm_params.model，但旧占位值 default 无法发送。发送层不凭空补模型，也不统一覆盖整批请求。
 
 ## 数据路径
 
@@ -206,7 +208,7 @@ replay-send --dry-run 仍创建逐请求日志，没有 litellm_send_started 或
 - 本地 metadata.force_endpoint 不发送给远端；它仍保存在原始 routes.jsonl 中。
 - api_base 属于客户端部署绑定参数，工具通过 SSH 隧道访问代理，不把它作为请求正文传入。
 
-当前所有模拟端点没有各自的真实部署映射。未来需要区分各端点时，应在外部接入层配置相应组或部署映射；不要把三个模拟 ID 都解释为不同的远端 official 部署。本工具的转换不会修改原记录或调度配置。
+离线 endpoint_a/b/c 仍是模拟 ID。真实 replay-send 从 /model/info 使用真实部署 ID，并按目标模型找到所选端点的唯一 tag，自动记录 endpoint_group。该字段由每条路由产生，不是默认 official；显式 --endpoint-group 则限定本地候选。多个同模型部署没有唯一 tag 时拒绝发送。独立网关保留交付文件中的模型名与组，旧模拟记录仍按公共模型名发送。本工具不修改远端部署。
 
 路由模块的 request 是经过接入校验后的 **完整 SchedulerRequest**，不是只有文本，也不是未经规范化的原始 API JSON。它包含 request_id、target_model、messages、input_tokens、predicted_output_tokens、priority、arrival_time、max_tokens、stream、api_type、slo、metadata。Router 将其保存在 RouteDecision.request；LiteLLMAdapter 再提取调用字段生成 litellm_params。输入/预测长度、优先级与 SLO 用于调度，不直接变成模型生成参数。
 

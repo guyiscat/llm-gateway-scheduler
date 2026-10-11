@@ -162,9 +162,9 @@ with LiteLLMSession("ubuntu@118.195.173.231") as session:
 
 ## 集成模拟后发送
 
-[integrations/replay_litellm.py](../workload_profiling/integrations/replay_litellm.py) 提供 replay_and_send 和 replay-send CLI。统一入口新增命令映射，simulation.cli.execute 和 SimulationRunner 只增加可选 on_request 观测接口，核心调度逻辑没有改动。replay_and_send 进入会话后才调用 load_config 和原 execute，模拟结束后用 iter_routes 按交付文件顺序读取、校验所有 payload，再复用同一会话串行发送。
+[integrations/replay_litellm.py](../workload_profiling/integrations/replay_litellm.py) 提供 replay_and_send 和 replay-send CLI。进入会话后读取 load_scheduler_settings，启动 EndpointMonitor，获取 /model/info 并从维护文件读取配置，作为 load_config(endpoint_configs=...) 的端点来源。模拟仍调用原 execute，结束后用 iter_routes 按交付文件顺序读取、校验 payload，再由 Monitor 绑定部署和维护实际调用状态；复用同一 SSH 会话。
 
-replay_and_send 和 build_payload 不接收全局 model 参数，CLI 也不再提供 --model。RouteOutputRecorder 显式保存 decision.request.target_model；build_payload 将该值作为真实请求 model。兼容旧交付文件中已有效的 litellm_params.model；旧 default 占位会拒绝。直接 LiteLLMAdapter 的 deployment_model/resolver 绑定能力保持原义，SSH 代理接入使用原请求的逻辑模型名。
+replay_and_send 和 build_payload 不接收全局 model 参数，CLI 也不提供 --model。RouteOutputRecorder 保存 decision.request.target_model；实际 HTTP model 沿用该公共模型名。EndpointMonitor.route_adapter() 通过已有 endpoint_resolver 接口，向 execute(route_adapter=...) 注入所选端点的唯一 endpoint_group，并写入交付文件；发送时再次校验绑定。resolver 的 metadata 与请求/决策 metadata 合并，绑定字段优先，其他生成参数保留。旧 ID 直传记录没有有效公共模型/组绑定时要求重新生成。直接 LiteLLMAdapter 的 deployment_model/resolver 绑定能力保持原义。
 
 ```python
 from workload_profiling.integrations.replay_litellm import replay_and_send
@@ -177,6 +177,12 @@ print(result.prepared_count, result.sent_count)
 ```
 
 返回 ReplayDeliveryResult，包含原 RunResult（simulation）、prepared_count、sent_count、dry_run 和日志目录 log_path。可注入 tokenizer、progress、on_response(route, response)、log_dir；旧 log_file 兼容转换为去掉 .jsonl 后缀的目录，不能与 log_dir 同传。响应先记录日志，再交给 on_response，未提供时在终端显示完整普通响应，SSE 默认实时显示。dry_run=True 不创建会话，只模拟及校验；它仍发布路由输出及逐请求日志，sent_count=0。endpoint_groups=None 不补入默认组。
+
+live_endpoints=True 为 Python API 默认；可配置 endpoint_state_dir、endpoint_update_interval（秒，默认 30）和 endpoint_limit_overrides。live_endpoints=False 仅用于显式保留旧离线端点的实验与测试，CLI 真实发送默认发现端点。dry_run 不查询远端。新 module 复用 EndpointStateManager，在真实 Unix 时钟维护实际请求，Scheduler 和 SimulationRunner 的虚拟反馈不混入。
+
+EndpointMonitor 刷新到期时先关闭发送入口，等待 inflight 为空及并发为零，再读取远端并更新文件；finally 解除暂停，异常也不会留下永久等待。send 自动遵守该同步门。在线 Scheduler 的 submit_request/tick 使用 scheduler_guard()，反馈使用 scheduler_guard(admission=False) 和 accept_feedback(..., drain=False)；反馈不能被同步门阻塞，否则无法排空在途请求。刷新后调用 tick 恢复队列。状态文件的 refresh_pending/refresh_phase 可用于观察暂停阶段；RPM/TPM 仍按滚动窗口保留。
+
+核心和模拟 EndpointConfig 允许 rpm_limit/tpm_limit/concurrency_limit 为 None；未知上限不参与该项硬容量或繁忙判断，利用率为 None。有限正整数配置行为不变。价格与上下文等按原 dataclass 验证。动态输出分类没有完整并发容量时使用 NORMAL 映射，容量轨迹为 None。维护文件和在线 state_manager 注入说明见 [端点状态维护](endpoint_state.md)。
 
 ## 日志接口
 

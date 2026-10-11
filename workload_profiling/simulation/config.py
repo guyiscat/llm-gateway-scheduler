@@ -14,9 +14,9 @@ from ..common.validation import positive_integer, finite_number
 @dataclass(frozen=True)
 class EndpointConfig:
     endpoint_id: str
-    rpm_limit: int
-    tpm_limit: int
-    concurrency_limit: int
+    rpm_limit: int | None
+    tpm_limit: int | None
+    concurrency_limit: int | None
     base_latency_ms: int = 5
     input_tokens_per_ms: float = 2000
     output_tokens_per_ms: float = 20
@@ -34,7 +34,8 @@ class EndpointConfig:
         if not isinstance(self.endpoint_id, str) or not self.endpoint_id.strip():
             raise ValueError("endpoint_id must be a nonempty string")
         for name in ("rpm_limit", "tpm_limit", "concurrency_limit"):
-            positive_integer(getattr(self, name), name)
+            if getattr(self, name) is not None:
+                positive_integer(getattr(self, name), name)
         positive_integer(self.base_latency_ms, "base_latency_ms", allow_zero=True)
         for name in ("input_tokens_per_ms", "output_tokens_per_ms"):
             finite_number(getattr(self, name), name)
@@ -138,7 +139,7 @@ class SimulationConfig:
             if getattr(self, name) > 1:
                 raise ValueError(f"{name} must satisfy 0 < threshold <= 1")
         positive_integer(self.busy_concurrency_reserve, "busy_concurrency_reserve", allow_zero=True)
-        if self.busy_concurrency_threshold is None and any(self.busy_concurrency_reserve >= e.concurrency_limit for e in self.endpoints):
+        if self.busy_concurrency_threshold is None and any(e.concurrency_limit is not None and self.busy_concurrency_reserve >= e.concurrency_limit for e in self.endpoints):
             raise ValueError("busy_concurrency_reserve must be smaller than every endpoint concurrency_limit")
 
         finite_number(self.high_priority_ratio, "high_priority_ratio", allow_zero=True)
@@ -178,7 +179,31 @@ class SimulationConfig:
         return cls(**settings)
 
 
-def load_config(path=CONFIG_PATH):
+def load_scheduler_settings(path=CONFIG_PATH):
+    """Load scheduling settings before endpoint discovery, without static endpoints."""
+    from ..core.config import SchedulerConfig, load_scheduler_config
+    path = Path(path).resolve()
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError("Simulation config must be an object")
+    if "scheduler_config" in data:
+        return load_scheduler_config(path.parent / data["scheduler_config"])
+    aliases = {"max_batch_size": "batch_size", "max_wait_ms": "batch_wait_ms",
+               "ranking_policy": "batch_order", "routing_policy": "strategy"}
+    values = {key: data[aliases.get(key, key)] for key in SchedulerConfig.__dataclass_fields__
+              if aliases.get(key, key) in data}
+    for key in ("output_policy_path", "output_reference_path", "output_reference_metadata_path"):
+        if values.get(key) is not None:
+            values[key] = str((path.parent / values[key]).resolve())
+    return SchedulerConfig(**values)
+
+
+def load_config(path=CONFIG_PATH, *, endpoint_configs=None):
+    if endpoint_configs is not None:
+        from ..core.config import EndpointConfig as CoreEndpointConfig
+        endpoint_configs = tuple(endpoint_configs)
+        if not endpoint_configs or any(not isinstance(endpoint, CoreEndpointConfig) for endpoint in endpoint_configs):
+            raise ValueError("Endpoint override requires a nonempty set of core EndpointConfig objects")
     path = Path(path).resolve()
     settings = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(settings, dict):
@@ -190,7 +215,7 @@ def load_config(path=CONFIG_PATH):
         scheduler_path = settings.pop("scheduler_config", None)
         if not all(isinstance(p, str) and p.strip() for p in (endpoint_path, scheduler_path)):
             raise ValueError("Split config requires endpoint_config and scheduler_config paths")
-        endpoints = load_endpoint_configs(path.parent / endpoint_path)
+        endpoints = tuple(endpoint_configs) if endpoint_configs is not None else load_endpoint_configs(path.parent / endpoint_path)
         scheduler = load_scheduler_config(path.parent / scheduler_path).to_dict()
         aliases = {"max_batch_size": "batch_size", "max_wait_ms": "batch_wait_ms",
                    "ranking_policy": "batch_order", "routing_policy": "strategy"}
@@ -203,6 +228,8 @@ def load_config(path=CONFIG_PATH):
                           "service_jitter_fraction", "service_jitter_seed"}
         if not isinstance(service, dict) or not set(service) <= service_fields:
             raise ValueError("Invalid simulation service_time fields")
+        if endpoint_configs is not None and isinstance(overrides, dict):
+            overrides = {key: value for key, value in overrides.items() if key in {e.endpoint_id for e in endpoints}}
         if not isinstance(overrides, dict) or not set(overrides) <= {e.endpoint_id for e in endpoints}:
             raise ValueError("Unknown endpoint_service endpoint")
         rows = []
@@ -212,6 +239,12 @@ def load_config(path=CONFIG_PATH):
                 raise ValueError("Invalid endpoint_service fields")
             rows.append({**asdict(endpoint), **service, **extra})
         settings.update(scheduler, endpoints=rows)
+    elif endpoint_configs is not None:
+        originals = settings.get("endpoints", [])
+        simulation_fields = set(EndpointConfig.__dataclass_fields__) - set(endpoint_configs[0].__dataclass_fields__)
+        template = originals[0] if originals else {}
+        settings["endpoints"] = [{**{key: template[key] for key in simulation_fields if key in template},
+                                  **asdict(endpoint)} for endpoint in endpoint_configs]
     config = SimulationConfig.from_dict(settings)
     resources = {}
     for name in ("output_policy_path", "output_reference_path", "output_reference_metadata_path"):

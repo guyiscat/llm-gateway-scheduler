@@ -30,7 +30,8 @@ class MinRpmStrategy:
         if not endpoints:
             raise ValueError("Routing requires at least one feasible endpoint")
         # Stable ties follow configuration order. State updates after every assignment.
-        return min(endpoints, key=lambda endpoint: endpoint.rpm_utilization).endpoint_id
+        return min(endpoints, key=lambda endpoint: endpoint.rpm_utilization
+                   if endpoint.rpm_utilization is not None else endpoint.requests_in_window).endpoint_id
 
 
 def load_strategy(spec):

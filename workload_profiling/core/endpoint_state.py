@@ -12,9 +12,9 @@ from .request import ExecutionResult
 @dataclass(frozen=True)
 class EndpointView:
     endpoint_id: str
-    rpm_limit: int
-    tpm_limit: int
-    concurrency_limit: int
+    rpm_limit: int | None
+    tpm_limit: int | None
+    concurrency_limit: int | None
     requests_in_window: int
     tokens_in_window: int
     concurrency: int
@@ -25,20 +25,20 @@ class EndpointView:
 
     @property
     def rpm_utilization(self):
-        return self.requests_in_window / self.rpm_limit
+        return None if self.rpm_limit is None else self.requests_in_window / self.rpm_limit
 
     @property
     def tpm_utilization(self):
-        return self.tokens_in_window / self.tpm_limit
+        return None if self.tpm_limit is None else self.tokens_in_window / self.tpm_limit
 
     @property
     def concurrency_utilization(self):
-        return self.concurrency / self.concurrency_limit
+        return None if self.concurrency_limit is None else self.concurrency / self.concurrency_limit
 
     def can_accept(self, request):
-        return (self.requests_in_window < self.rpm_limit
-                and self.tokens_in_window + request.total_tokens <= self.tpm_limit
-                and self.concurrency < self.concurrency_limit)
+        return ((self.rpm_limit is None or self.requests_in_window < self.rpm_limit)
+                and (self.tpm_limit is None or self.tokens_in_window + request.total_tokens <= self.tpm_limit)
+                and (self.concurrency_limit is None or self.concurrency < self.concurrency_limit))
 
 
 @dataclass
