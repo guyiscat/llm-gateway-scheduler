@@ -1,209 +1,117 @@
-# 开发接口
+# 开发接口与验证
 
-[项目首页](../README.md) · [使用指南](guide.md) · [架构](architecture.md)
+[项目首页](../README.md) · [架构](architecture.md) · [完整流程](../项目完整运行流程.md)
 
-## 核心入口与统一结构
+## 层次
 
-```python
-from workload_profiling.core import (
-    Scheduler, SchedulerRequest, ExecutionResult,
-    load_endpoint_configs, load_scheduler_config,
-)
+core 只依赖标准请求、状态与策略协议，不导入 integrations 或模拟数据集。policies 提供排序、路由、ECDF 与动态长短分类；adapters 构建交付参数及原子路由记录。simulation 提供数据读取、标准参数生成、虚拟到达和执行反馈，仍被主线调用，没有独立 CLI。
 
-endpoints = load_endpoint_configs("workload_profiling/config/endpoint_config.json")
-settings = load_scheduler_config("workload_profiling/config/scheduler_config.json")
-scheduler = Scheduler(endpoints, settings)
-record = scheduler.submit_request(SchedulerRequest(
-    request_id="req_001", target_model="deepseek-flash",
-    messages=({"role": "user", "content": "hi"},),
-    input_tokens=1200, predicted_output_tokens=500,
-    max_tokens=1024, priority=1, stream=True, arrival_time=1000,
-    slo={"ttft_ms": 2000, "tpot_ms": 80}, metadata={"user_id": "u1"},
-))
-decisions = scheduler.take_decisions()
-# 将 decisions 交给网关/执行器。执行完成后：
-decision = decisions[0]
-scheduler.accept_feedback(ExecutionResult(
-    request_id=decision.request.request_id,
-    endpoint_id=decision.selected_endpoint_id, success=True,
-    started_at_ms=decision.dispatched_at_ms, finished_at_ms=1500,
-    actual_input_tokens=1200, actual_output_tokens=450,
-    ttft_ms=100, tpot_ms=0.8,
-))
-```
+integrations 管理 SSH/HTTP、后台生命周期和模拟后发送；endpoint_monitor 发现真实部署并维护本会话真实负载。兼容转发模块已删除，策略直接从 policies 导入。
 
-时间统一为同一运行时间轴上的整数毫秒，不混用秒、Unix 秒与虚拟毫秒。arrival_time 按接入顺序非递减；反馈可以迟到，其完成时间不倒退内部处理时钟。独立 SchedulerConfig 默认 tokens；加载项目调度文件会使用现有百分位分类，可注入 classifier 替换。
+## 主要接口
 
-SchedulerRequest 必需 ID、模型、输入及预测输出；priority 只允许0/1，不含实际输出。消息和 metadata 接入时深拷贝。SLO 可省略。对象字段冻结，但嵌套消息/metadata 按只读约定使用，插件不要修改。RouteDecision 保存请求、端点、派发时刻、候选 ID 与 metadata。RequestBatch 保存完整窗口成员、释放时间和触发原因。
+| 文件 / API | 作用 |
+| --- | --- |
+| core/request.py / SchedulerRequest | 每条完整标准请求，包括 target_model、Token 估计、messages 和控制参数 |
+| core/scheduler.py / Scheduler | submit_request、tick、flush、accept_feedback、next_wakeup_ms |
+| core/endpoint_filter.py / EndpointFilter | 兼容、可用与容量候选池，支持规则扩展 |
+| core/busy_detector.py / LoadMonitor | RPM/TPM/并发软繁忙判断 |
+| core/batch_window.py / BatchWindow | 聚合、截止与满批释放 |
+| core/endpoint_state.py / EndpointStateManager | 预留、反馈修正、额度过期和恢复；真实与虚拟各自实例 |
+| core/endpoint_history.py / EndpointHistory | 近期性能窗口 |
+| policies/ranking.py / load_batch_order | fifo、light_heavy、weighted_length 及导入式策略 |
+| policies/light_heavy_ranking.py / LightHeavyRankingPolicy | 独立完成压力分档、门槛选择、轻重分类和稳定排序 |
+| policies/routing.py / load_strategy | min_rpm 或自定义同步选择器 |
+| simulation/config.py / load_config | 必须注入已发现的 endpoint_configs；拒绝静态端点配置 |
+| simulation/replay.py / execute | 原有虚拟排程编排，输出路由，支持 on_request 与 route_adapter |
+| endpoint_monitor/service.py / EndpointMonitor | 首次 GET、周期刷新、状态文件、真实 send 与反馈 |
+| integrations/replay_litellm.py / replay_and_send | 需要已认证 session 和它的 monitor，不再自行登录或提供离线模式 |
 
-submit_request 也接受对应字段的 dict，返回 SchedulingRecord。即时路径可能已产生 decision；等待路径 status=queued，之后由反馈或 tick 派发。使用 take_decisions 消费待执行决定，或构造时注入 on_dispatch(decision) 投递到自己的执行队列。真实调用应放在工作线程/任务中，避免阻塞核心时钟；完成后回到同一个串行调度循环调用 accept_feedback。
+## 配置加载
 
-窗口/额度/冷却需要外部定时器：读取 next_wakeup_ms，在该时刻调用 tick(now_ms)，每次变化后重新注册。外部健康观测用 states.update_health(endpoint_id, healthy, now_ms)，再 tick。核心方法要求单一串行调用者；多线程应在调用方同步，多进程不能各自共享这份内存状态。
+simulation/config.py 的 load_scheduler_settings 先读取配置引用的 scheduler_config.json，登录前校验。load_config(path, endpoint_configs=...) 在批次开始注入 Monitor.endpoint_configs() 读取的真实能力，再附加 service_time 与 endpoint_service，构成虚拟排程配置。
 
-ExecutionResult 的实际长度未知时用 None，不能填写预测冒充实际。未知项保留预留估计。success=False 时 failure_kind 可为 endpoint、rate_limit、request、cancelled 或 None；仅前两者自动冷却。反馈须匹配实际预留的 ID、端点、开始时间，重复和未知反馈会拒绝。默认 E2E 为完成减到达，包含排队；TTFT/TPOT 未测量时留空。
+config 只有请求/模拟、调度、动态分类三份 JSON。静态端点加载函数和 endpoint_config.json 已删除。SimulationConfig.endpoints 是本批注入后的运行时值，不是配置文件中的离线来源。程序化核心与测试仍可构造 EndpointConfig；测试夹具只存在 tests，不会成为生产默认端点。
 
-## 可替换排序与路由
+排序支持 rank_requests 或既有 order_batch；路由支持 select_endpoint 或 select。导入策略采用 module:attribute，必须同步且候选/排序输出合法。默认 min_rpm 使用 RPM 利用率，RPM 上限未知时使用窗口请求数；价格、历史和 SLO 通过 RoutingContext 提供研究接口，未实现 Pareto 决策。
 
-```python
-class MyRoute:
-    def select_endpoint(self, request, endpoints, context):
-        # endpoints 已满足模型、健康、通道软筛选及硬容量条件。
-        # context.endpoint_configs 提供价格/能力；performance 提供近期缓存。
-        return min(endpoints, key=lambda e: e.rpm_utilization).endpoint_id
+## 两级优先级与窗口排序
 
-class MyRank:
-    def rank_requests(self, requests, context):
-        # 返回原请求对象，每个恰好一次；此处给出 FIFO。
-        return tuple(requests)
+请求与运行统计只使用 priority=0/1，1 为高优先级。simulation/priority.py 保留显式值，默认 binary 根据 request_id 与种子生成两级值，high_priority_ratio 控制高优先级概率；uniform 只将缺少值的请求设为 0。旧 priority_level 输入被拒绝，不进行隐式映射。
 
-scheduler = Scheduler(endpoints, settings,
-    routing_policy=MyRoute(), ranking_policy=MyRank())
-```
+高优先级绕过窗口，可以使用软繁忙门槛之后仍未用尽的容量，仍须满足模型、健康、Cooldown 与硬限额。低优先级在非繁忙时即时选择非繁忙端点；繁忙时进入窗口，释放后选择满足硬限制的端点。
 
-RoutingContext 包含 now_ms、候选 endpoint_configs、performance。EndpointPerformance 提供样本数、成功/失败数、mean_e2e_ms、mean_ttft_ms、mean_tpot_ms。SLO/stream/预测位于请求本身，未来 Pareto 可直接使用这些信息。默认 min_rpm 保持原逻辑，不会自动执行 Pareto 或约束 SLO。
+默认 light_heavy 的键为 (-priority, heavy)。窗口只有低优先级，实际效果为轻请求优先，同类保持到达顺序。heavy 表示长度分类，不是另一档请求优先级；policies/classification.py、output_heavy_policy.py、percentile_reference.py、pressure_threshold_policy.json 与固定 Parquet 参考仍在主线使用。窗口释放时分类冻结，后续容量等待不会重新排序。weighted_length 则按 input_weight*input_tokens + output_weight*predicted_output_tokens 排序。
 
-新排序上下文是 dict，包含 now_ms、endpoints，直接核心调用另含本批 classification。策略自身保存参数。weighted_length 使用 `input_weight × input_tokens + output_weight × predicted_output_tokens`，ranking_direction 控制方向，同分稳定。默认 priority_then_light 和 fifo 保留。所有输出 ID 必须完整、唯一且无外来成员；非法顺序在派发前拒绝。路由只能返回当前候选中的 ID。
+## 独立的轻重分类排序策略
 
-策略配置支持 module:attribute 的无参类、工厂或实例。保留旧 select(request,endpoints,now_ms) 与 order_batch(requests,endpoints,now_ms) 接口，以免破坏现有研究插件；三份 simulation/routing.py、ordering.py、classification.py 仅保留兼容导入，算法实现位于 policies。async 策略会拒绝。
-
-模拟旧 order_batch 接收保留 priority_level 的观测副本，但其中 output_tokens 已替换为预测值；这样保留旧四档排序且不会把实际输出泄露给排序。只有新 rank_requests 的插件则接收标准核心请求。原始实际观测只交给模拟执行器。新增真实策略应使用标准接口。
-
-## 硬过滤与共享状态
-
-EndpointFilter.register(name, rule) / remove(name) 可增删能力规则。rule(request, config, view, now_ms) 返回 None 表示通过，返回原因字符串表示排除。模型、接口、上下文是默认能力规则；健康、Cooldown 和硬容量保护仍统一执行。过滤只筛选，不打分。
-
-EndpointPool 的 compatible/eligible/feasible 分别表示能力匹配、健康候选、容量可行；exclusions 保存原因。繁忙判断使用 eligible，路由使用通道软筛选后的 feasible。不要把容量耗尽端点从繁忙判定中丢掉。
-
-所有模块从一个 EndpointStateManager 获取快照。可注入已建立的 state_manager，但必须使用相同 SchedulerConfig。states.export(now_ms) 生成动态状态，history.snapshot(ids,now_ms) 读取近期性能。load_health_state(path,now_ms) 仅恢复行政健康/冷却，拒绝未知端点和未完成并发；历史配额/在途续跑不在支持范围内。
-
-## LiteLLM 参数与执行适配
+scheduler_config.json 中 ranking_policy="light_heavy" 选择 LightHeavyRankingPolicy。它通过现有 rank_requests 接口一次完成压力计算 → 百分位门槛选择 → 输入/输出轻重分类 → 轻请求优先排序。分类组件由策略内部持有；Scheduler 与 SimulationRunner 不再加载或直接调用 OutputPercentileClassifier，也不再接受独立 classifier/classification_policy 参数。分类与百分位文件仍作为该策略的内部组件保留。
 
 ```python
-from workload_profiling.adapters import LiteLLMAdapter
+from workload_profiling.policies.ranking import load_batch_order
 
-adapter = LiteLLMAdapter()
-endpoint = scheduler.states.configs[decision.selected_endpoint_id]
-params = adapter.build_params(decision, endpoint)
-
-# 真正接入时由应用安装 SDK 并提供环境凭据：
-# import litellm
-# result = adapter.execute(decision, endpoint, litellm.completion,
-#                          on_chunk=send_chunk_to_client)
-# scheduler.accept_feedback(result)
+policy = load_batch_order("light_heavy", config=scheduler_settings)
+result = policy.rank_requests(requests, {
+    "endpoints": endpoint_views,
+    "now_ms": now_ms,
+    "ready_count": ready_count,
+    "batch_id": batch_id,
+    "classification_context": "window",
+})
+ordered_requests = result.requests
+classification_by_id = result.classification
+pressure_snapshot = result.snapshot
 ```
 
-参数保留 model、messages、max_tokens、stream、metadata，透传 temperature/top_p/tools/tool_choice/parallel_tool_calls/response_format/stop/seed/user。model 默认 target_model，配置 deployment_model 时使用实际部署名；api_base 来自所选端点。流式调用请求 include_usage，未知用量仍允许 None。适配器不导入 SDK、不存 API key，也不会在构造时联网；参数是否支持取决于具体提供商。
+requests 是 SchedulerRequest 序列，endpoints 是调度器全部端点快照，ready_count 不包含本次批次，now_ms 为当前毫秒时刻。RankingResult 定义在 policies/ranking.py，包含有序请求、逐请求分类字典和可选压力快照；结果与后续批次隔离。Scheduler 校验请求没有增加、遗漏或重复，再保存分类与日志、依序派发。普通 rank_requests 插件仍可返回请求序列，order_batch 插件仍可返回 ID 序列。
 
-metadata.force_endpoint 总是写为所选 ID，但它只是项目/网关约定，**不能假定 LiteLLM 原生按这个字段强制路由**。执行前必须配置端点 api_base、唯一 deployment_model，或注入 endpoint_resolver(endpoint,request) 返回部署绑定参数。resolver 可以映射到自定义网关别名；网关必须落实该映射。默认模拟端点没有部署地址，execute 会拒绝未绑定调用；build_params 仍可用于审查参数。
+light_heavy 还提供可选 classify_requests(requests, context) 接口，供即时请求记录轻重信息；它返回 RankingResult，不改变即时调度路径，也不对即时队列排序。核心通过可选接口调用并记录结果，不计算具体压力或长度门槛。
 
-execute 接受同步 completion 函数，可以是 LiteLLM completion 或项目网关。普通响应提取实际 usage 和耗时；流式响应逐块回调，忽略仅 role 的首块，内容/工具输出首块产生 TTFT，已知输出 token 数及多块输出产生平均 TPOT。缺少观测时不伪造指标。适配器返回反馈，由调用方回送核心；不是独立后台执行系统。
+output_classification 仍控制本策略内部的 tokens、percentile_fixed、percentile_dynamic 三种方式。默认动态方式保留 idle/normal/busy/critical 对应 0.9/0.8/0.7/0.6；并发上限未知时采用 normal。tokens 模式不加载历史百分位参考。切换 fifo、weighted_length 或不提供分类诊断的插件时，不运行动态分类，也不加载相关参考文件；记录中的轻重字段为 null，统计计入 unclassified_requests，避免将未分类请求误报为轻请求。自定义参考或分类器可通过 LightHeavyRankingPolicy(config, classifier=...) 注入，随后将整个策略作为 Scheduler.ranking_policy 或 SimulationRunner.batch_order 传入。
 
-默认错误映射：400/404/422 为 request，429 为 rate_limit，5xx/TimeoutError/ConnectionError 为 endpoint，未知原因保留 None；可注入 error_classifier 针对 SDK 异常扩展。输出回调异常归为 request，避免错误冷却端点。参考 [LiteLLM 参数文档](https://docs.litellm.ai/docs/completion/input) 与 [流式接口](https://docs.litellm.ai/docs/completion/stream)。
+旧 priority_then_light 策略名与实现已移除，使用 light_heavy。RPM/TPM/并发决定是否进入窗口的软繁忙机制继续由 core/busy_detector.py 与 admission.py 维护，不属于该排序策略。
 
-## 模拟与本地路由记录
+## 路由输入与输出
 
-旧 API 继续可用：
+core/router.py 的 Router.route(request, candidates, now_ms) 接收完整 SchedulerRequest、已由调度器过滤的 EndpointView 序列和毫秒时刻；空候选返回 None。Router 通过注入的 EndpointStateManager 获取静态配置与近期性能，组成 RoutingContext(now_ms, endpoint_configs, performance)。
 
 ```python
-from workload_profiling.simulation import load_config, SimulationRunner, WorkloadRequest
-
-config = load_config()
-runner = SimulationRunner(config)
-result = runner.run([WorkloadRequest("sample", 100, 300)])
+selected_endpoint_id = policy.select_endpoint(request, candidates, context)
+decision = router.route(request, candidates, now_ms)
+# decision: RouteDecision(request, selected_endpoint_id, dispatched_at_ms, candidate_ids, metadata)
 ```
 
-WorkloadRequest 是离线实际观测，output_tokens 为实际输出；可附上 priority=0/1、predicted_output_tokens、messages、target_model、stream、max_tokens、slo、metadata。RequestParameterGenerator.prepare 生成标准请求和独立观测；target_model 非 null 时保留，否则使用 SimulationConfig.target_model，默认 deepseek-flash。显式非法模型值在观测校验时拒绝。SimulatedRequestSender.schedule 只决定到达时间，submit(request,scheduler) 使用同一入口。真实接入绕过这些模拟模块。
+SchedulerRequest 的必填字段为 request_id、target_model、input_tokens、predicted_output_tokens；其他字段为 priority、arrival_time、messages、max_tokens、stream、api_type、slo、metadata。消息正文连同参数一起传入，路由无需重新解析原始数据集。EndpointView 包含三类容量上限及窗口用量、并发、健康、Cooldown 等。
 
-SimulationRunner 每实例运行一次。可注入 strategy、batch_order、classification_policy、executor、on_route、on_request；executor.plan(decision,observation) 返回 ExecutionResult，便于模拟失败/限流；不另维护资源计数。on_route(decision) 在已预留的实际派发时同步调用，先于 executor.plan；不能是 async，也不能返回 awaitable。回调错误会终止回放，核心将当前执行标为 request 失败并释放并发；未知实际用量仍保留估计，RPM 不立即撤回。on_request(request) 在 prepare 完成后、submit 前调用，获得带所有参数和默认值的 SchedulerRequest，之后被拒绝的请求也会被观测。它必须同步，参数按只读使用；回调异常会终止回放。
+策略只返回候选中的一个端点 ID，Router 校验后封装 RouteDecision，不发送 HTTP。adapters/litellm_adapter.py 的 build_params(decision, endpoint) 才生成交付参数；主线注入 Monitor.route_adapter()，使用公共模型名与唯一 endpoint_group 绑定部署。adapters/route_output.py 保存 request_id、target_model、selected_endpoint_id、dispatched_at_ms、litellm_params 到 routes.jsonl。
 
-CLI 的 execute 返回单个 RunResult，负责来源校验、tokenizer、回放与原子记录：
+路由记录中的 metadata.force_endpoint 用于本地说明所选部署；integrations/litellm_gateway.py 的 build_payload 在真实 HTTP 发送前移除它，并筛选调用字段，加入禁用重试与 fallback 的控制参数。当前远端的部署绑定依赖公共 model 与 metadata.endpoint_group，不能仅依靠 force_endpoint。逐请求日志中的实际 payload 可核对最终发送内容。
 
-```python
-from workload_profiling.simulation.cli import execute
-result = execute(load_config(), limit=200,
-                 output="workload_profiling/results/routes.jsonl")
-# result.requests/events/batches/summary 等可用于内存分析。
-```
+## 后台生命周期
 
-记录器也可独立用于核心派发回调：
+session_service.login 校验 → 建立隧道与读 Key → 隐藏 worker → 匿名管道交接 → 首次目录获取 → ready 返回。worker 用 WindowsProcessOwner 接管 SSH HANDLE，同一生命周期持有一个 LiteLLMSession 和 EndpointMonitor。
 
-```python
-from workload_profiling.adapters import RouteOutputRecorder
+SessionBroker 处理受鉴权的本机 status、replay、close。串行锁避免多个批次覆盖输出或混用请求日志。--idle-timeout 控制连续空闲；活动批次不超时，结束后重计时。close 标记停止，不允许新批次或后续 POST，等待当前任务排空。
 
-with RouteOutputRecorder("workload_profiling/results/routes.jsonl", endpoints) as recorder:
-    scheduler = Scheduler(endpoints, settings, on_dispatch=recorder)
-    # 在此同步提交请求、推进 tick 并接受反馈，直到本次运行结束。
-```
+send_batch 消费输出事件、SSE 片段和最终结果，跨进程回传终端；没有自动重试。控制连接断开时无法保证已经发出的请求未执行，调用方必须查看日志。API Key 经匿名 stdin 传递，只保存在 session 内存；控制文件仅存本地令牌，目录设置当前用户 ACL。
 
-RouteOutputRecorder 使用 EndpointConfig 和 LiteLLMAdapter.build_params 构建每行交付记录；可通过 adapter=LiteLLMAdapter(endpoint_resolver=...) 注入部署映射。未派发或拒绝请求没有记录。上下文正常退出时发布整份输出；异常保留原文件并删除临时文件。同一个记录器只用于一次串行运行；回调本身只负责记录，执行及反馈由调用方继续驱动。
+启动失败清理本次拥有的控制文件与进程。正常退出停止维护、关闭隧道并删除锁。已有旧锁不自动删除，避免终止或覆盖其他活动会话。
 
-默认回放创建记录器并作为 SimulationRunner.on_route 注入。它记录实际派发顺序，不遍历运行结束后的到达顺序结果表。记录含 request_id、target_model、selected_endpoint_id、dispatched_at_ms、litellm_params；模拟完成事件、响应和状态快照不写入。默认模型为 deepseek-flash，端点 ID 仍为模拟标识；真实部署绑定及凭据由执行环境提供。
+## 批次与日志
 
-## 框架之外的会话发送
+replay_and_send 的 connected_session 与 connected_monitor 必须对应。参数包含 config_path、source/source_format、limit、output、endpoint_groups、max_tokens/no_max_tokens、log_dir，以及程序化 tokenizer、progress、on_response 和 cancelled 回调。
 
-[integrations/litellm_gateway.py](../workload_profiling/integrations/litellm_gateway.py) 独立读取 routes.jsonl 中所选的记录，映射远端模型，再通过 OpenSSH 隧道调用代理。端点组可选，无默认组；原记录有组时保留，显式参数可覆盖。它不导入 Scheduler、不改变模拟和四份配置，也不向已结束的模拟运行注入反馈。模块提供 read_route、build_payload、ssh_tunnel、send_request、LiteLLMSession；命令见 [接入说明](litellm_gateway.md)。
+每批创建 RunLog，再用 session.recording(log) 临时绑定日志，结束恢复先前绑定，不结束登录。虚拟 execute 的 on_request 同时记录标准请求和交给 Monitor.capture_request。模拟结束后迭代本批交付记录，先校验全部 payload，再按顺序调用 Monitor.send。返回 ReplayDeliveryResult，包含 simulation、prepared_count、sent_count 和 log_path。
 
-send_request 每次调用执行一个 POST，返回 http_status、指定响应头、response_format（json/text/sse）和 response。普通响应解析为完整 JSON，非 JSON 保留文本；SSE 通过可选 on_response_chunk(text) 同步回调实时输出，完整原文也返回在 response 中。CLI 默认显示普通响应正文或实时流式事件及最终状态，HTTP 错误正文同样可见。响应不写入路由文件；一次发送标记已废弃，不再创建或检查。网络失败不自动重试或重连。
+DeliveryError 保存 request_id、successful_count、pending_count。普通 HTTP/网络错误的 pending_count 不含已经失败的请求；发送前取消时包含尚未发送的当前请求。错误停止本批，后台会话保留。真实反馈不写回虚拟 Scheduler。
 
-LiteLLMSession 是同步上下文管理器，在进入时建立一次 SSH 隧道并读取一次 KEY（或隐藏输入），所有 send(payload) 复用该隧道和凭据；退出时关闭隧道并清空会话持有的凭据。会话外调用 send 会拒绝。可在后续外围实验驱动器中复用：
+RunLog.record(event, request_id=...) 写入该请求文件，未提供 ID 时写入 run.jsonl。sequence 为本批统一递增序号，schema_version=2。即时 flush/fsync、凭据脱敏、目录独占；历史记录不覆盖。路由记录器也先写临时文件，模拟与源文件哈希校验成功后原子发布。
 
-```python
-from workload_profiling.integrations.litellm_gateway import LiteLLMSession, build_payload
+## 刷新同步与保留内容
 
-# route_records 由调用方提供；执行环境提供 KEY 和 SSH 认证。
-with LiteLLMSession("ubuntu@118.195.173.231") as session:
-    for route in route_records:
-        payload = build_payload(route)
-        result = session.send(payload)
-        # 调用方处理 result；如需实时 SSE，可传 on_response_chunk 回调。
-```
+Monitor 的刷新门先暂停新发送，再等真实在途与并发归零，GET 后 finally 解除暂停。反馈能继续排空。调度在线接口通过 scheduler_guard 控制提交和 tick，反馈使用 admission=False 或 accept_feedback(..., drain=False)，避免刷新与完成反馈死锁。
 
-命令行 --send --session 复用相同接口，每次输入请求 ID 时重新读取 JSONL；回车发送默认选择，/quit、EOF 或 Ctrl+C 关闭会话。连续发送为串行执行，不模拟到达速率，不去重，不自动消费整份路由文件。
-
-## 集成模拟后发送
-
-[integrations/replay_litellm.py](../workload_profiling/integrations/replay_litellm.py) 提供 replay_and_send 和 replay-send CLI。进入会话后读取 load_scheduler_settings，启动 EndpointMonitor，获取 /model/info 并从维护文件读取配置，作为 load_config(endpoint_configs=...) 的端点来源。模拟仍调用原 execute，结束后用 iter_routes 按交付文件顺序读取、校验 payload，再由 Monitor 绑定部署和维护实际调用状态；复用同一 SSH 会话。
-
-replay_and_send 和 build_payload 不接收全局 model 参数，CLI 也不提供 --model。RouteOutputRecorder 保存 decision.request.target_model；实际 HTTP model 沿用该公共模型名。EndpointMonitor.route_adapter() 通过已有 endpoint_resolver 接口，向 execute(route_adapter=...) 注入所选端点的唯一 endpoint_group，并写入交付文件；发送时再次校验绑定。resolver 的 metadata 与请求/决策 metadata 合并，绑定字段优先，其他生成参数保留。旧 ID 直传记录没有有效公共模型/组绑定时要求重新生成。直接 LiteLLMAdapter 的 deployment_model/resolver 绑定能力保持原义。
-
-```python
-from workload_profiling.integrations.replay_litellm import replay_and_send
-
-result = replay_and_send(
-    ssh_target="ubuntu@118.195.173.231", limit=3,
-    # 可传 config_path、source、source_format、output。
-)
-print(result.prepared_count, result.sent_count)
-```
-
-返回 ReplayDeliveryResult，包含原 RunResult（simulation）、prepared_count、sent_count、dry_run 和日志目录 log_path。可注入 tokenizer、progress、on_response(route, response)、log_dir；旧 log_file 兼容转换为去掉 .jsonl 后缀的目录，不能与 log_dir 同传。响应先记录日志，再交给 on_response，未提供时在终端显示完整普通响应，SSE 默认实时显示。dry_run=True 不创建会话，只模拟及校验；它仍发布路由输出及逐请求日志，sent_count=0。endpoint_groups=None 不补入默认组。
-
-live_endpoints=True 为 Python API 默认；可配置 endpoint_state_dir、endpoint_update_interval（秒，默认 30）和 endpoint_limit_overrides。live_endpoints=False 仅用于显式保留旧离线端点的实验与测试，CLI 真实发送默认发现端点。dry_run 不查询远端。新 module 复用 EndpointStateManager，在真实 Unix 时钟维护实际请求，Scheduler 和 SimulationRunner 的虚拟反馈不混入。
-
-EndpointMonitor 刷新到期时先关闭发送入口，等待 inflight 为空及并发为零，再读取远端并更新文件；finally 解除暂停，异常也不会留下永久等待。send 自动遵守该同步门。在线 Scheduler 的 submit_request/tick 使用 scheduler_guard()，反馈使用 scheduler_guard(admission=False) 和 accept_feedback(..., drain=False)；反馈不能被同步门阻塞，否则无法排空在途请求。刷新后调用 tick 恢复队列。状态文件的 refresh_pending/refresh_phase 可用于观察暂停阶段；RPM/TPM 仍按滚动窗口保留。
-
-核心和模拟 EndpointConfig 允许 rpm_limit/tpm_limit/concurrency_limit 为 None；未知上限不参与该项硬容量或繁忙判断，利用率为 None。有限正整数配置行为不变。价格与上下文等按原 dataclass 验证。动态输出分类没有完整并发容量时使用 NORMAL 映射，容量轨迹为 None。维护文件和在线 state_manager 注入说明见 [端点状态维护](endpoint_state.md)。
-
-## 日志接口
-
-RunLog 位于 common/run_log.py，默认在 results/logs 创建新运行目录，path 表示目录、run_file 表示 run.jsonl。record(event, request_id=..., **fields) 按请求分文件写入并立即 flush/fsync；没有 request_id 的事件写入 run.jsonl。request_path(request_id) 返回该请求的文件路径，request_filename 处理特殊字符、Windows 保留名和过长 ID，防止路径穿越与文件名混淆。scheduler_request(request) 保存 asdict(request) 的完整快照，simulation_result(result) 保存每条模拟状态。schema_version=2，sequence 为本次运行的全局事件顺序，可跨文件重建顺序。每条事件写完关闭文件，避免大规模回放耗尽文件句柄。目录独占创建，旧目录拒绝；异常退出保留已写事件并在 run.jsonl 记录 run_finished 及请求文件数量。凭据字段与 register_secret 注册的认证值脱敏；消息、SLO、metadata、真实回答和用量均保留。
-
-```python
-from workload_profiling.common.run_log import RunLog
-from workload_profiling.simulation.cli import execute
-
-with RunLog(mode="replay") as log:
-    result = execute(config, on_request=log.scheduler_request)
-    log.simulation_result(result)
-print(log.path)
-print(log.request_path("request_000000"))
-```
-
-execute 的 Python API 默认不创建日志文件，调用方通过 on_request 注入记录器；CLI 默认启用。LiteLLMSession 可传 run_log=log，并用 send(payload, request_id=..., selected_endpoint_id=...) 关联真实事件。send_request 是底层单次 HTTP 函数，本身不创建日志。会话在发送前记录真实 payload，收到 SSE 时记录片段，正常返回后记录完整响应；异常记录发送失败且不重试。使用同一 RunLog 注入模拟和会话即可关联完整数据流，replay_and_send 已完成这项编排。读取示例见 [运行日志](litellm_gateway.md#运行日志)。
-
-DeliveryError 表示真实发送失败或结果未知，携带 request_id、successful_count、pending_count，停止后续请求并关闭会话；pending_count 不包含刚失败的请求。HTTP 错误正文先显示或交给 on_response，网络失败不重试。路由文件已经发布，异常不会删除。重新调用会重新模拟和发送，不是断点续发；取消、输入错误和认证失败也会正常释放已打开的会话。
-
-这个编排复用完整模拟，真实发送发生在模拟结束之后，不是替换 SimulatedExecutor，也不会向已结束的 Scheduler 写入真实反馈。limit 为输入记录上限，拒绝请求没有路由交付，发送条数可小于 limit。测试用真实模拟和假 HTTP 验证 3/N 条派发顺序、虚拟结果与原 execute 一致、配置加载前认证、单会话复用、错误停止及文件保留。
+capacity 为 null 时对应利用率未知；未知容量不参与该项硬限制与软繁忙判断。固定百分位参考及 tokenizer 仍被主线使用。虚拟 SimulatedExecutor 与状态算法继续保留，因为当前仍先模拟再交付。不存在旧模拟端点文件、离线 CLI、旧手动网关 CLI、独立 endpoint-watch 或策略兼容转发。
 
 ## 验证
 
@@ -211,6 +119,4 @@ DeliveryError 表示真实发送失败或结果未知，携带 request_id、succ
 & .\.venv\Scripts\python.exe -m unittest discover -s workload_profiling/tests -t .
 ```
 
-测试覆盖三条路径、模型池繁忙与硬容量区别、过滤/恢复、滚动额度、反馈匹配/迟到/实际用量、缓存边界、优先级、发送模式、策略协议、分层配置、LiteLLM参数/流式/错误、tokenizer 依赖、路由记录，以及外部接入的可选组映射、单条选择、请求上限、重复发送、会话认证复用、退出清理与失败不重试。单元测试使用假 HTTP 响应，不产生模型费用。
-
-当前主线保留原始请求、冻结参考、tokenizer 缓存、四份有效配置、核心算法及模拟反馈。网页服务、HTML 可视化、报表导出与旧网页结果已删除；本地保存路由交付参数、逐请求日志及运行级记录。
+测试覆盖过滤、优先级、即时/窗口路径、排序、容量恢复、输出分类、原子交付、日志、刷新同步、重复批次、错误无重试、空闲超时和关闭排空。后台集成测试使用真实本机控制进程和假 HTTP 服务，替代 SSH/模型提供方，不产生模型费用。ACL 行为单独验证；代理环境的文件系统沙箱不允许实际 WRITE_DAC。

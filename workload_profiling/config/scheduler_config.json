@@ -8,7 +8,7 @@
   "cooldown_ms": 1000,
   "history_window_ms": 60000,
   "history_max_samples": 10000,
-  "ranking_policy": "priority_then_light",
+  "ranking_policy": "light_heavy",
   "routing_policy": "min_rpm",
   "input_weight": 1,
   "output_weight": 1,

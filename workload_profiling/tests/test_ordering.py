@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 import unittest
 
 from ..simulation import SimulationRunner, load_batch_order
-from ..simulation.ordering import validate_batch_order
+from ..policies.ranking import validate_batch_order
 from .support import config, endpoint, req
 
 
@@ -48,7 +48,7 @@ class OrderingTests(unittest.TestCase):
             def order_batch(self, requests, endpoints, now_ms):
                 snapshots.append((requests, endpoints))
                 with self_test.assertRaises(FrozenInstanceError):
-                    requests[0].priority_level = 4
+                    requests[0].priority = 1
                 with self_test.assertRaises(FrozenInstanceError):
                     endpoints[0].concurrency = 0
                 return super().order_batch(requests, endpoints, now_ms)

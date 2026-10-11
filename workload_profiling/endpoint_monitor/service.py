@@ -326,10 +326,12 @@ class EndpointMonitor:
                                      {"metadata": request.metadata})
         return LiteLLMAdapter(endpoint_resolver=resolve)
 
-    def send(self, route, payload, *, on_response_chunk=None):
+    def send(self, route, payload, *, on_response_chunk=None, cancelled=None):
         request_id, endpoint_id = route["request_id"], route["selected_endpoint_id"]
         with self.lock:
             self._wait_for_admission()
+            if cancelled is not None and cancelled():
+                raise RuntimeError("Session closing; request was not sent")
             payload = self.bind_payload(route, payload)
             if request_id not in self.requests:
                 raise ValueError("Real execution requires the captured SchedulerRequest")

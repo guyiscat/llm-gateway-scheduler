@@ -4,10 +4,11 @@ Call submit_request for ingress, accept_feedback for completion, and tick at
 next_wakeup_ms for timers. This module generates no traffic or service times.
 """
 from collections import deque
+from copy import deepcopy
 from dataclasses import asdict
 import inspect
 
-from ..policies.ranking import load_batch_order, validate_batch_order
+from ..policies.ranking import RankingResult, load_batch_order, validate_batch_order
 from .admission import AdmissionPolicy
 from .batch_window import BatchWindow
 from .busy_detector import SystemLoad
@@ -21,7 +22,7 @@ from .router import Router
 
 class Scheduler:
     def __init__(self, endpoints, config=None, *, state_manager=None, endpoint_filter=None,
-                 routing_policy=None, ranking_policy=None, classifier=None, on_dispatch=None, on_event=None):
+                 routing_policy=None, ranking_policy=None, on_dispatch=None, on_event=None):
         self.config = config or (state_manager.settings if state_manager is not None else SchedulerConfig())
         if state_manager is not None and self.config != state_manager.settings:
             raise ValueError("Scheduler and shared state manager must use the same settings")
@@ -32,15 +33,14 @@ class Scheduler:
         self.endpoint_filter = endpoint_filter or EndpointFilter()
         self.admission = AdmissionPolicy(self.config)
         self.router = Router(self.states, routing_policy if routing_policy is not None else self.config.routing_policy)
-        if classifier is None and self.config.output_classification != "tokens":
-            from ..policies.classification import OutputPercentileClassifier
-            classifier = OutputPercentileClassifier.load_default(self.config)
-        self.classifier = classifier
         self.ranking = ranking_policy if ranking_policy is not None else load_batch_order(
-            self.config.ranking_policy, config=self.config, classification_policy=classifier)
+            self.config.ranking_policy, config=self.config)
         rank = getattr(self.ranking, "rank_requests", None) or getattr(self.ranking, "order_batch", None)
         if not callable(rank) or inspect.iscoroutinefunction(rank):
             raise TypeError("Ranking must implement a synchronous policy")
+        classify = getattr(self.ranking, "classify_requests", None)
+        if classify is not None and (not callable(classify) or inspect.iscoroutinefunction(classify)):
+            raise TypeError("Optional classify_requests must be synchronous")
         self.window = BatchWindow(self.config.max_batch_size, self.config.max_wait_ms)
         self.dispatcher = RequestDispatcher()
         self.records = {}
@@ -85,17 +85,12 @@ class Scheduler:
         self.advance_to(request.arrival_time)
         record = SchedulingRecord(request)
         self.records[request.request_id] = record
-        input_heavy = request.input_tokens >= self.config.input_threshold_tokens
-        output_heavy = request.predicted_output_tokens >= self.config.output_threshold_tokens
-        record.classification = {"input_heavy": input_heavy, "output_heavy": output_heavy,
-                                 "heavy": input_heavy or output_heavy}
-        if self.classifier is not None:
-            record.classification.update(output_heavy=None, heavy=None)
-        self.emit("arrived", request_id=request.request_id, heavy=record.classification["heavy"],
-                  **({"classification_pending": True} if self.classifier is not None else {}))
+        record.classification = {"input_heavy": None, "output_heavy": None, "heavy": None}
+        self.emit("arrived", request_id=request.request_id, heavy=None,
+                  classification_pending=callable(getattr(self.ranking, "classify_requests", None)))
         pool = self._pool(request)
         if not pool.compatible:
-            self._classify((request,), None, "immediate")
+            self._assess_immediate(request)
             self._reject(record, "no_compatible_endpoint")
             return record
         load = self.admission.load_monitor.snapshot(pool.eligible) if pool.eligible else SystemLoad(())
@@ -109,37 +104,59 @@ class Scheduler:
         if decision.scheduling_path == "busy_window":
             self._release(self.window.add(request, self.now_ms))
         else:
-            self._classify((request,), None, "immediate")
+            self._assess_immediate(request)
             self.dispatcher.enqueue_immediate(request)
             self.dispatcher.drain(self._try_dispatch, include_window=False)
         return record
 
-    def _classify(self, requests, batch_id, context):
-        if self.classifier is None:
-            return None
-        decisions, snapshot = self.classifier.classify_batch(
-            tuple(requests), self.states.snapshots(self.now_ms), len(self.dispatcher), self.now_ms, batch_id)
-        if set(decisions) != {r.request_id for r in requests}:
-            raise ValueError("Classifier must classify every request")
+    def _ranking_context(self, batch_id, phase):
+        return {"endpoints": self.states.snapshots(self.now_ms), "now_ms": self.now_ms,
+                "ready_count": len(self.dispatcher), "batch_id": batch_id,
+                "classification_context": phase}
+
+    def _record_ranking_result(self, requests, result):
+        if not isinstance(result.classification, dict):
+            raise TypeError("Ranking classification must be a mapping")
+        if result.classification and set(result.classification) != {r.request_id for r in requests}:
+            raise ValueError("Ranking diagnostics must classify every request")
+        for decision in result.classification.values():
+            if not isinstance(decision, dict) or any(
+                    not isinstance(decision.get(name), bool) for name in ("input_heavy", "output_heavy", "heavy")):
+                raise ValueError("Ranking classification requires boolean length labels")
+        if result.snapshot is not None and not isinstance(result.snapshot, dict):
+            raise TypeError("Ranking snapshot must be a mapping or None")
         for request in requests:
-            self.records[request.request_id].classification.update(decisions[request.request_id])
-        snapshot["classification_context"] = context
-        self.emit("classification_updated", **snapshot)
-        return snapshot
+            self.records[request.request_id].classification.update(deepcopy(result.classification.get(request.request_id, {})))
+        if result.snapshot is not None:
+            self.emit("classification_updated", **result.snapshot)
+
+    def _assess_immediate(self, request):
+        assess = getattr(self.ranking, "classify_requests", None)
+        if assess is None:
+            return
+        result = assess((request,), self._ranking_context(None, "immediate"))
+        if not isinstance(result, RankingResult):
+            raise TypeError("classify_requests must return RankingResult")
+        validate_batch_order((request,), [r.request_id for r in result.requests])
+        self._record_ranking_result((request,), result)
 
     def _release(self, batch):
         if batch is None:
             return
-        snapshot = self._classify(batch.requests, batch.batch_id, "window")
-        views = self.states.snapshots(self.now_ms)
+        context = self._ranking_context(batch.batch_id, "window")
+        result = None
         rank = getattr(self.ranking, "rank_requests", None)
         if rank:
-            ordered = rank(batch.requests, {"endpoints": views, "now_ms": self.now_ms,
-                                           "classification": {r.request_id: self.records[r.request_id].classification for r in batch.requests}})
+            ordered = rank(batch.requests, context)
+            if isinstance(ordered, RankingResult):
+                result, ordered = ordered, ordered.requests
             ordered_ids = [r.request_id for r in ordered]
         else:
-            ordered_ids = self.ranking.order_batch(batch.requests, views, self.now_ms)
+            ordered_ids = self.ranking.order_batch(batch.requests, context["endpoints"], self.now_ms)
         ordered_ids = validate_batch_order(batch.requests, ordered_ids)
+        if result is not None:
+            self._record_ranking_result(batch.requests, result)
+        snapshot = result.snapshot if result is not None else None
         info = {"batch_id": batch.batch_id, "trigger": batch.trigger, "released_at_ms": batch.released_at_ms,
                 "size": len(batch.requests), "request_ids": [r.request_id for r in batch.requests],
                 "dispatch_order": list(ordered_ids)}

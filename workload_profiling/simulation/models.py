@@ -1,4 +1,4 @@
-"""Offline actual observations plus retained public endpoint import names."""
+"""Recorded request parameters and actual lengths used for virtual routing."""
 from dataclasses import dataclass, field
 from copy import deepcopy
 
@@ -11,8 +11,6 @@ class WorkloadRequest:
     input_tokens: int
     output_tokens: int
     source_line: int | None = None
-    priority_level: int = 1
-    priority_level_source: str = "default"
     priority: int | None = None
     predicted_output_tokens: int | None = None
     target_model: str | None = None
@@ -30,12 +28,6 @@ class WorkloadRequest:
             positive_integer(getattr(self, name), name, allow_zero=True)
         if self.source_line is not None:
             positive_integer(self.source_line, "source_line", allow_zero=True)
-        positive_integer(self.priority_level, "priority_level")
-        if self.priority_level > 4:
-            raise ValueError("priority_level must be an integer from 1 to 4")
-        if self.priority_level_source not in ("default", "recorded", "synthetic"):
-            raise ValueError("Invalid priority_level_source")
-
         if self.priority is not None:
             positive_integer(self.priority, "priority", allow_zero=True)
             if self.priority not in (0, 1):
@@ -54,5 +46,3 @@ class WorkloadRequest:
     @property
     def total_tokens(self):
         return self.input_tokens + self.output_tokens
-from ..core.endpoint_state import EndpointView
-from .execution import SimulatedEndpoint as EndpointState

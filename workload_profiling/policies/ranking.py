@@ -1,6 +1,7 @@
 """Replaceable ordering of a released batch, independent of endpoint routing."""
 from __future__ import annotations
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 import importlib
 import inspect
 from typing import Protocol
@@ -32,26 +33,20 @@ class FifoOrderStrategy:
 
 class RankingPolicy(Protocol):
     def rank_requests(self, requests, context):
-        """Return every request once, preserving request contents."""
+        """Return a request sequence or RankingResult; every request appears once.
+
+        Context provides endpoints, now_ms, ready_count, batch_id and
+        classification_context (window/immediate). No future arrivals are passed.
+        """
         ...
 
 
-class PriorityThenLightOrderStrategy:
-    def __init__(self, config, classification_policy=None):
-        self.config = config
-        self.classification_policy = classification_policy
-
-    def rank_requests(self, requests, context):
-        by_id = {r.request_id: r for r in requests}
-        return tuple(by_id[i] for i in self.order_batch(requests, context["endpoints"], context["now_ms"]))
-
-    def order_batch(self, requests, endpoints, now_ms):
-        def key(request):
-            heavy = ((request.input_tokens >= self.config.input_threshold_tokens or request.output_tokens >= self.config.output_threshold_tokens) if self.classification_policy is None
-                     else self.classification_policy.decisions[request.request_id]["heavy"])
-            return -getattr(request, "priority_level", getattr(request, "priority", 0)), heavy
-        # Stable ties retain arrival order within the same level and type.
-        return [r.request_id for r in sorted(requests, key=key)]
+@dataclass(frozen=True)
+class RankingResult:
+    """Ordered requests plus optional per-request diagnostics and batch snapshot."""
+    requests: tuple[WorkloadRequest, ...]
+    classification: dict = field(default_factory=dict)
+    snapshot: dict | None = None
 
 
 class WeightedLengthOrderStrategy:
@@ -67,27 +62,32 @@ class WeightedLengthOrderStrategy:
         return [r.request_id for r in self.rank_requests(requests)]
 
 
+def _light_heavy_policy(config):
+    from .light_heavy_ranking import LightHeavyRankingPolicy
+    return LightHeavyRankingPolicy(config)
+
+
 BUILTIN_BATCH_ORDERS = {
     "fifo": FifoOrderStrategy,
     "weighted_length": WeightedLengthOrderStrategy,
-    "priority_then_light": PriorityThenLightOrderStrategy,
+    "light_heavy": _light_heavy_policy,
 }
 
 
-def load_batch_order(spec, *, config=None, classification_policy=None):
+def load_batch_order(spec, *, config=None):
     if spec == "weighted_length":
         if config is None:
             raise ValueError("Weighted ordering requires settings")
         return WeightedLengthOrderStrategy(config)
-    if spec == "priority_then_light":
+    if spec == "light_heavy":
         if config is None:
-            raise ValueError("Priority ordering requires a SimulationConfig")
-        return PriorityThenLightOrderStrategy(config, classification_policy)
+            raise ValueError("Light/heavy ordering requires settings")
+        return BUILTIN_BATCH_ORDERS[spec](config)
     if spec in BUILTIN_BATCH_ORDERS:
         return BUILTIN_BATCH_ORDERS[spec]()
     module, separator, attribute = spec.partition(":")
     if not separator or not module or not attribute:
-        raise ValueError("batch_order must be fifo, priority_then_light, weighted_length or module:attribute")
+        raise ValueError("batch_order must be fifo, light_heavy, weighted_length or module:attribute")
     try:
         order = getattr(importlib.import_module(module), attribute)
     except (ImportError, AttributeError) as error:

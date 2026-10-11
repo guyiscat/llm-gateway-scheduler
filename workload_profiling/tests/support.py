@@ -28,6 +28,14 @@ def config(**overrides):
     return SimulationConfig(**(defaults | overrides))
 
 
+def live_config(path=None):
+    """Inject isolated test endpoints; production gets them from LiteLLM only."""
+    from ..simulation.config import CONFIG_PATH, load_config
+    endpoints = tuple(endpoint("test_" + str(i), rpm=60000, tpm=500000000,
+                               concurrency=8 + i * 4).to_core() for i in range(3))
+    return load_config(path or CONFIG_PATH, endpoint_configs=endpoints)
+
+
 def req(index, input_tokens=10, output_tokens=1):
     return WorkloadRequest(str(index), input_tokens, output_tokens)
 

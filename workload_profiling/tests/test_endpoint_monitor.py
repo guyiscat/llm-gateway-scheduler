@@ -1,9 +1,8 @@
 """Authenticated discovery, clock separation and quota-preserving maintenance."""
-from contextlib import nullcontext, redirect_stdout
+from contextlib import nullcontext
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from copy import deepcopy
 from dataclasses import replace
-from io import StringIO
 import json
 import os
 from threading import Event, Thread
@@ -16,8 +15,7 @@ from ..core.config import SchedulerConfig
 from ..core.request import ExecutionResult, SchedulerRequest
 from ..endpoint_monitor import EndpointMonitor, filter_catalog, load_state_configs
 from ..endpoint_monitor.service import response_usage
-from ..integrations import litellm_gateway as gateway, replay_litellm as bridge
-from ..simulation.config import load_config
+from ..integrations import litellm_gateway as gateway
 from .support import config, temporary_directory
 from .test_litellm_gateway import Response
 
@@ -146,6 +144,29 @@ class EndpointMonitorTests(unittest.TestCase):
             self.assertEqual(len(state.window), 0)
             self.assertEqual(state.tokens_in_window, 0)
             self.assertEqual(state.total_tokens, 8)
+
+    def test_close_while_waiting_for_refresh_prevents_new_post(self):
+        session, fetching, release, cancelled = Session(), Event(), Event(), Event()
+        original_get = session.get_model_info
+        def get():
+            fetching.set()
+            release.wait(3)
+            return original_get()
+        with temporary_directory() as directory, self.monitor(session, directory) as monitor:
+            monitor.capture_request(request())
+            with patch.object(session, "get_model_info", side_effect=get):
+                refresh = background(monitor.refresh)
+                try:
+                    self.assertTrue(fetching.wait(2))
+                    send = background(lambda: monitor.send(route(), {"model": "deepseek-flash"}, cancelled=cancelled.is_set))
+                    cancelled.set()
+                finally:
+                    release.set()
+                refresh.result(timeout=3)
+                with self.assertRaisesRegex(RuntimeError, "Session closing"):
+                    send.result(timeout=3)
+            self.assertEqual(session.calls, [])
+            self.assertFalse(monitor.states.inflight)
 
     def test_refresh_drains_all_requests_and_delays_new_sends_through_the_get(self):
         session, started, release, fetching, release_get = Session(), [Event(), Event()], [Event(), Event()], Event(), Event()
@@ -484,39 +505,7 @@ class EndpointMonitorTests(unittest.TestCase):
             self.assertEqual(monitor.states.states["deployment-official"].total_tokens, 30)
             self.assertEqual(monitor.uncertain_requests[-1]["reported_endpoint_id"], "deployment-relay")
 
-    def test_discovery_failure_prevents_replay_and_paid_calls(self):
-        session = Session()
-        session.raw = {"data": []}
-        with temporary_directory() as directory, patch.object(bridge, "LiteLLMSession", return_value=nullcontext(session)), \
-                patch.object(bridge, "load_scheduler_settings", return_value=self.settings()), patch.object(bridge, "execute") as execute, redirect_stdout(StringIO()):
-            with self.assertRaises(ValueError):
-                bridge.replay_and_send(ssh_target="ubuntu@example.com", log_dir=directory / "logs", endpoint_state_dir=directory / "endpoints")
-            execute.assert_not_called()
-            self.assertEqual(session.calls, [])
 
-    def test_integrated_default_uses_real_catalog_instead_of_static_endpoint_file(self):
-        session = Session()
-        with temporary_directory() as directory:
-            source, output = directory / "source.jsonl", directory / "routes.jsonl"
-            source.write_text('\n'.join(json.dumps({"input_tokens": 1, "output_tokens": 2,
-                "messages": [{"role": "user", "content": "question"}]}) for _ in range(2)), encoding="utf-8")
-            scheduler_file, simulation_file = directory / "scheduler.json", directory / "simulation.json"
-            scheduler_file.write_text(json.dumps(self.settings().to_dict()), encoding="utf-8")
-            simulation_file.write_text(json.dumps({"endpoint_config": "does_not_exist.json", "scheduler_config": "scheduler.json",
-                "arrival_mode": "fixed", "priority_assignment": "uniform"}), encoding="utf-8")
-            with patch.object(bridge, "LiteLLMSession", return_value=nullcontext(session)), redirect_stdout(StringIO()):
-                result = bridge.replay_and_send(ssh_target="ubuntu@example.com", config_path=simulation_file,
-                    source=source, source_format="lengths", limit=2, output=output, log_dir=directory / "logs",
-                    endpoint_state_dir=directory / "endpoints")
-            routes = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([row["selected_endpoint_id"] for row in routes], ["deployment-official", "deployment-relay"])
-            self.assertEqual([payload["model"] for payload in session.calls], ["deepseek-flash"] * 2)
-            self.assertEqual([payload["metadata"]["endpoint_group"] for payload in session.calls], [["official"], ["relay"]])
-            self.assertEqual([row["litellm_params"]["metadata"]["endpoint_group"] for row in routes], [["official"], ["relay"]])
-            self.assertTrue(all(row["litellm_params"]["model"] == row["target_model"] for row in routes))
-            self.assertEqual(result.sent_count, 2)
-            state = json.loads((directory / "endpoints/endpoint_state.json").read_text(encoding="utf-8"))
-            self.assertEqual([row["runtime"]["total_tokens"] for row in state["endpoints"]], [8, 8])
 
     def test_get_model_info_uses_one_authenticated_get_on_existing_session(self):
         calls = []

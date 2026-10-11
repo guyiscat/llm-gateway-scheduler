@@ -5,9 +5,10 @@ import sys
 
 
 COMMANDS = {
-    "replay": ("workload_profiling.simulation.cli", "回放请求并记录 LiteLLM 路由交付参数"),
-    "replay-send": ("workload_profiling.integrations.replay_litellm", "启动登录后模拟 N 条请求并发送到 LiteLLM"),
-    "endpoint-watch": ("workload_profiling.endpoint_monitor.cli", "登录后获取并维护 LiteLLM 端点状态"),
+    "replay-send": ("workload_profiling.integrations.replay_litellm", "复用登录会话，模拟 N 条请求并发送到 LiteLLM"),
+    "litellm-login": ("workload_profiling.integrations.session_cli", "登录并启动可复用的后台会话"),
+    "litellm-status": ("workload_profiling.integrations.session_cli", "查看会话与空闲超时状态"),
+    "litellm-close": ("workload_profiling.integrations.session_cli", "停止后续发送并关闭登录会话"),
 }
 
 

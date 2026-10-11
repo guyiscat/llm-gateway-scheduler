@@ -1,13 +1,13 @@
 """Virtual-clock experiment driver around the same core used by real requests."""
 from collections import Counter
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field
 import heapq
 import inspect
 
 from ..common.metrics import summarize_ms as statistics
 from ..core import Scheduler
-from .ordering import load_batch_order
-from .routing import load_strategy
+from ..policies.ranking import load_batch_order
+from ..policies.routing import load_strategy
 from .data_processing import RequestParameterGenerator
 from .request_sender import SimulatedRequestSender
 from .execution import SimulatedExecutor
@@ -25,21 +25,15 @@ class RunResult:
 
 
 class SimulationRunner:
-    def __init__(self, config, *, strategy=None, batch_order=None, classification_policy=None,
+    def __init__(self, config, *, strategy=None, batch_order=None,
                  executor=None, on_route=None, on_request=None):
         self.config = config
-        if classification_policy is not None and config.output_classification == "tokens":
-            raise ValueError("Injected percentile policy requires percentile output_classification")
-        self.classification_policy = classification_policy
-        if config.output_classification != "tokens" and classification_policy is None:
-            from .classification import OutputPercentileClassifier
-            self.classification_policy = OutputPercentileClassifier.load_default(config)
         self.strategy = strategy if strategy is not None else load_strategy(config.strategy)
         selector = getattr(self.strategy, "select_endpoint", None) or getattr(self.strategy, "select", None)
         if not callable(selector) or inspect.iscoroutinefunction(selector):
             raise TypeError("Routing must implement a synchronous selector")
         self.batch_order = batch_order if batch_order is not None else load_batch_order(
-            config.batch_order, config=config, classification_policy=self.classification_policy)
+            config.batch_order, config=config)
         rank = getattr(self.batch_order, "rank_requests", None) or getattr(self.batch_order, "order_batch", None)
         if not callable(rank) or inspect.iscoroutinefunction(rank):
             raise TypeError("Batch ordering must implement a synchronous policy")
@@ -65,18 +59,6 @@ class SimulationRunner:
         observations, plans, running, events = {}, {}, [], []
         sequence = 0
 
-        class RankingAdapter:
-            def order_batch(adapter_self, core_requests, endpoints, now_ms):
-                legacy_order = getattr(self.batch_order, "order_batch", None)
-                if callable(legacy_order):
-                    # Preserve four-level ordering only in recorded simulation;
-                    # every output length exposed to ranking is still an estimate.
-                    legacy_requests = tuple(replace(observations[r.request_id], output_tokens=r.predicted_output_tokens)
-                                            for r in core_requests)
-                    return legacy_order(legacy_requests, endpoints, now_ms)
-                rank = getattr(self.batch_order, "rank_requests", None)
-                return [r.request_id for r in rank(core_requests, {"endpoints": endpoints, "now_ms": now_ms})]
-
         def dispatched(decision):
             nonlocal sequence
             if self.on_route is not None:
@@ -93,15 +75,13 @@ class SimulationRunner:
         def record_event(event):
             event = dict(event)
             request_id = event.get("request_id")
-            if "priority" in event:
-                event["priority_level"] = observations[request_id].priority_level
             if event["event"] == "dispatched":
                 event["finished_at_ms"] = plans[request_id].finished_at_ms
             events.append(event)
 
         scheduler = Scheduler(tuple(e.to_core() for e in config.endpoints), config.scheduler_config(),
-                              routing_policy=self.strategy, ranking_policy=RankingAdapter(),
-                              classifier=self.classification_policy, on_dispatch=dispatched, on_event=record_event)
+                              routing_policy=self.strategy, ranking_policy=self.batch_order,
+                              on_dispatch=dispatched, on_event=record_event)
         item = next(scheduled, None)
         next_arrival = item[0] if item is not None else 0
         now = 0
@@ -149,7 +129,7 @@ class SimulationRunner:
             finished_at = feedback.finished_at_ms if feedback is not None else record.rejected_at_ms
             view = record.endpoint_before
             row = {name: getattr(observation, name) for name in (
-                "request_id", "input_tokens", "output_tokens", "source_line", "priority_level", "priority_level_source")}
+                "request_id", "input_tokens", "output_tokens", "source_line")}
             row.update(total_tokens=observation.total_tokens, priority=request.priority,
                        target_model=request.target_model, stream=request.stream,
                        predicted_output_tokens=request.predicted_output_tokens,
@@ -177,10 +157,10 @@ class SimulationRunner:
             rows.append(row)
         batches = scheduler.batches
         states = scheduler.states.export(now)
-        heavy_rows = [r for r in rows if r["heavy"]]
+        heavy_rows = [r for r in rows if r["heavy"] is True]
         completed_heavy = [r for r in heavy_rows if r["status"] == "completed"]
         completed = [r for r in rows if r["status"] == "completed"]
-        completed_light = [r for r in completed if not r["heavy"]]
+        completed_light = [r for r in completed if r["heavy"] is False]
         dispatched = [r for r in rows if r["dispatch_at_ms"] is not None]
 
         summary = {"clock": "virtual_ms", "output_length_mode": "oracle_recorded_response",
@@ -190,10 +170,11 @@ class SimulationRunner:
                    "strategy": config.strategy, "strategy_class": type(self.strategy).__module__ + "." + type(self.strategy).__qualname__,
                    "batch_order": config.batch_order,
                    "batch_order_class": type(self.batch_order).__module__ + "." + type(self.batch_order).__qualname__,
-                   "total_requests": len(rows), "light_requests": len(rows)-len(heavy_rows),
-                   "heavy_requests": len(heavy_rows), "input_heavy_requests": sum(r["input_heavy"] for r in rows),
-                   "output_heavy_requests": sum(r["output_heavy"] for r in rows),
-                   "both_heavy_requests": sum(r["input_heavy"] and r["output_heavy"] for r in rows),
+                   "total_requests": len(rows), "light_requests": sum(r["heavy"] is False for r in rows),
+                   "unclassified_requests": sum(r["heavy"] is None for r in rows),
+                   "heavy_requests": len(heavy_rows), "input_heavy_requests": sum(r["input_heavy"] is True for r in rows),
+                   "output_heavy_requests": sum(r["output_heavy"] is True for r in rows),
+                   "both_heavy_requests": sum(r["input_heavy"] is True and r["output_heavy"] is True for r in rows),
                    "completed_requests": sum(r["status"] == "completed" for r in rows),
                    "rejected_requests": sum(r["status"] == "rejected" for r in rows),
                    "batch_count": len(batches), "batch_triggers": dict(Counter(b["trigger"] for b in batches)),
@@ -207,7 +188,7 @@ class SimulationRunner:
                    "all_capacity_wait_ms": statistics([r["capacity_wait_ms"] for r in completed]),
                    "capacity_wait_requests": sum(r["capacity_wait_ms"] > 0 for r in completed),
                    "endpoint_executed_requests": len(dispatched),
-                   "endpoint_executed_light_requests": sum(not r["heavy"] for r in dispatched),
+                   "endpoint_executed_light_requests": sum(r["heavy"] is False for r in dispatched),
                    "endpoint_dispatch_counts": {e["endpoint_id"]: e["total_requests"] for e in states}}
         summary.update(scheduling_mode="adaptive",
                        scheduling_paths=dict(Counter(row["scheduling_path"] for row in rows)),
@@ -217,20 +198,21 @@ class SimulationRunner:
         summary["failed_requests"] = sum(r["status"] == "failed" for r in rows)
         if config.busy_concurrency_threshold is not None:
             summary["busy_thresholds"]["concurrency_fraction"] = config.busy_concurrency_threshold
-        summary["priority_levels"] = {}
-        for level in range(1, 5):
-            members = [row for row in rows if row["priority_level"] == level]
+        summary["priority_stats"] = {}
+        for priority in (0, 1):
+            members = [row for row in rows if row["priority"] == priority]
             finished = [row for row in members if row["status"] == "completed"]
-            summary["priority_levels"][str(level)] = {
+            summary["priority_stats"][str(priority)] = {
                 "requests": len(members), "completed": len(finished),
                 "rejected": sum(row["status"] == "rejected" for row in members),
                 "latency_ms": statistics([row["latency_ms"] for row in finished]),
                 "queue_wait_ms": statistics([row["queue_wait_ms"] for row in finished])}
-        if self.classification_policy is not None:
-            summary["output_percentile_reference_samples"] = self.classification_policy.reference.sample_count
-            summary["threshold_update_count"] = sum(s["threshold_changed"] for s in self.classification_policy.trace)
-            summary["threshold_values_used"] = sorted({s["threshold"] for s in self.classification_policy.trace})
-        artifacts = self.classification_policy.artifacts() if self.classification_policy is not None else None
+        export = getattr(self.batch_order, "artifacts", None)
+        artifacts = export() if callable(export) else None
+        if artifacts is not None:
+            summary["output_percentile_reference_samples"] = artifacts["reference"]["sample_count"]
+            summary["threshold_update_count"] = sum(s["threshold_changed"] for s in artifacts["trace"])
+            summary["threshold_values_used"] = sorted({s["threshold"] for s in artifacts["trace"]})
         history = {key: asdict(value) for key, value in scheduler.states.history.snapshot(
             scheduler.states.configs, now).items()}
         return RunResult(rows, events, batches, states, summary, artifacts, history)

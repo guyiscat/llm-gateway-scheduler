@@ -58,13 +58,13 @@ RPM 与 TPM 使用固定的 60 秒滚动窗口。时刻 t 的额度统计对应�
 
 ## 3. 请求优先级与模型候选池繁忙判断
 
-### 3.1 模拟四档与核心二分类
+### 3.1 高、低两级优先级
 
-模拟层支持 1、2、3、4 四档优先级，第 4 档最高。当前默认配置使用可复现的四档分配方式；数据中明确提供的优先级信息予以保留。
+模拟层与核心都只使用两级优先级：`priority=1` 表示高优先级，`priority=0` 表示低优先级。数据中明确提供的二分类值予以保留。
 
-进入核心时，请求以 `priority=1` 表示高优先级，以 `priority=0` 表示普通请求。没有显式二分类值时，第 4 档映射为高优先级，第 1～3 档映射为普通请求。若数据显式提供核心 priority，则优先使用该值。
+缺少显式值时，默认 binary 模式依据 request_id 和 priority_seed 生成可复现的二分类值，high_priority_ratio 默认 0.1；这是生成概率，不保证每个有限批次恰好 10% 为高优先级。uniform 模式将缺少值的请求全部设为低优先级。
 
-四档信息由模拟观测记录保留，并通过模拟排序适配层提供给窗口排序；它不是 SchedulerRequest 的独立字段。直接使用核心调度器时，默认只能区分高优先级和普通请求。
+四档字段、生成方式、核心映射和专用排序适配已移除。请求等级与轻/重分类互相独立：高优先级也可能是重请求，低优先级也可能是轻请求。
 
 ### 3.2 单端点与候选池繁忙条件
 
@@ -137,7 +137,9 @@ U 为聚合并发利用率，D 为当前已经到达的需求超过空闲槽位�
 
 ### 4.3 排序策略与顺序派发
 
-默认 `priority_then_light` 在模拟窗口中先按四档优先级从高到低排序，同档轻请求排在重请求之前，同档且同类型保留到达顺序。第 4 档通常已进入高优先级即时路径，普通窗口主要包含第 1～3 档。直接使用核心时，该策略读取核心二分类优先级，无法恢复模拟层的四档信息。
+默认 `light_heavy` 的排序键是 `(-priority, heavy)`，并保持同键请求的到达顺序。高优先级请求绕过窗口，因此当前实际窗口只含低优先级请求，排序效果是轻请求在前、重请求在后，同类保持到达顺序。它不会在轻请求或重请求内部继续按 Token 长度升序。模拟和核心直接使用同一排序器、同一标准请求，排序读到的输出长度始终是预测值。
+
+该策略实现为 policies/light_heavy_ranking.py 中的 LightHeavyRankingPolicy，内部统一组织压力分档、门槛选择、轻重分类及排序。调度器通过 rank_requests 提供端点快照、当前时刻、已就绪请求数与批次信息，策略返回 RankingResult：有序请求、逐请求分类及压力快照。调度器仅校验、记录与派发，不提前运行独立分类器。即时请求通过可选 classify_requests 接口保留分类记录，不进入排序窗口。切换 FIFO 或加权长度策略时不执行轻重分类，未分类标签记录为 null。
 
 项目还提供 `fifo` 和 `weighted_length`。加权长度策略直接计算：
 
@@ -203,13 +205,7 @@ RunResult 在内存中保留请求、事件、批次、端点快照、汇总统�
 
 项目当前没有网页可视化和自动报表导出。算法效果需要通过不同到达模式、长度分布、估计误差及容量条件进行对比，不能仅凭一次回放推断已经降低成本或提升 SLO 达成率。
 
-从项目根目录运行本地回放示例：
-
-```powershell
-& .\.venv\Scripts\python.exe -m workload_profiling replay --limit 200
-```
-
-不指定 limit 时读取默认本地数据集的全部记录。当前模拟配置默认采用 burst 到达模式：将部分请求集中到较短的虚拟时间段内，用于观察压力变化；它不等同于对外部服务真实压测，也不表示调度器强制将所有请求置于繁忙窗口。
+虚拟排程由主线调用 simulation/replay.py 的 execute，端点能力由调用方注入；独立离线命令与静态模拟端点文件已移除。当前请求配置默认采用 burst 到达模式：将部分请求集中到较短的虚拟时间段内，用于观察压力变化；它不等同于对外部服务真实压测，也不表示调度器强制将所有请求置于繁忙窗口。
 
 当前实现已经形成“请求特征与动态状态 → 候选过滤和路径选择 → 窗口排序及统一路由 → 资源预留 → 执行反馈”的调度闭环。SLO、价格和性能上下文为进一步研究提供接口；成本–性能 Pareto 优化与有界失败重试仍需作为独立策略和恢复模块补充。
 
@@ -222,11 +218,11 @@ RunResult 在内存中保留请求、事件、批次、端点快照、汇总统�
 | RPM/TPM 软繁忙阈值 | 0.95 / 0.95 | scheduler_config.json |
 | 并发繁忙门槛 | 上限减 3；比例阈值默认未设置 | scheduler_config.json |
 | 窗口数量与聚合等待上限 | 16 条 / 20 毫秒 | scheduler_config.json |
-| 请求排序 / 端点路由 | priority_then_light / min_rpm | scheduler_config.json |
+| 请求排序 / 端点路由 | light_heavy / min_rpm | scheduler_config.json |
 | 输出分类 | percentile_dynamic | scheduler_config.json |
 | 额度窗口 / 历史窗口 | 60000 / 60000 毫秒 | scheduler_config.json |
 | 历史样本上限 / Cooldown | 每端点 10000 条 / 1000 毫秒 | scheduler_config.json |
-| 模拟优先级 / 输出估计 | four_level / oracle | simulation_adaptive.json |
+| 模拟优先级 / 输出估计 | binary（0/1，高优先级概率 0.1）/ oracle | simulation_adaptive.json |
 | 模拟到达模式 | burst | simulation_adaptive.json |
 | 分类压力阈值与百分位映射 | 见第 4 节 | pressure_threshold_policy.json |
 
@@ -240,8 +236,8 @@ RunResult 在内存中保留请求、事件、批次、端点快照、汇总统�
 | 分层候选过滤 | [core/endpoint_filter.py](../workload_profiling/core/endpoint_filter.py) |
 | 繁忙判断与调度路径 | [core/busy_detector.py](../workload_profiling/core/busy_detector.py)、[core/admission.py](../workload_profiling/core/admission.py) |
 | 窗口聚合与队列派发 | [core/batch_window.py](../workload_profiling/core/batch_window.py)、[core/request_dispatcher.py](../workload_profiling/core/request_dispatcher.py) |
-| 固定分布、动态分类和排序策略 | [policies/percentile_reference.py](../workload_profiling/policies/percentile_reference.py)、[policies/classification.py](../workload_profiling/policies/classification.py)、[policies/ranking.py](../workload_profiling/policies/ranking.py) |
+| 固定分布、动态分类和排序策略 | [policies/light_heavy_ranking.py](../workload_profiling/policies/light_heavy_ranking.py)、[policies/percentile_reference.py](../workload_profiling/policies/percentile_reference.py)、[policies/classification.py](../workload_profiling/policies/classification.py)、[policies/ranking.py](../workload_profiling/policies/ranking.py) |
 | 统一路由入口与 min_rpm | [core/router.py](../workload_profiling/core/router.py)、[policies/routing.py](../workload_profiling/policies/routing.py) |
 | 额度、并发、健康、冷却与历史缓存 | [core/endpoint_state.py](../workload_profiling/core/endpoint_state.py)、[core/endpoint_history.py](../workload_profiling/core/endpoint_history.py) |
 | 核心调度编排与模拟服务反馈 | [core/scheduler.py](../workload_profiling/core/scheduler.py)、[simulation/execution.py](../workload_profiling/simulation/execution.py) |
-| 本地回放入口、路由记录及逐请求日志 | [simulation/cli.py](../workload_profiling/simulation/cli.py)、[adapters/route_output.py](../workload_profiling/adapters/route_output.py)、[common/run_log.py](../workload_profiling/common/run_log.py) |
+| 虚拟排程编排、路由记录及逐请求日志 | [simulation/replay.py](../workload_profiling/simulation/replay.py)、[adapters/route_output.py](../workload_profiling/adapters/route_output.py)、[common/run_log.py](../workload_profiling/common/run_log.py) |

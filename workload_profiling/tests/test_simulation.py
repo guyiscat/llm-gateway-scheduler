@@ -2,10 +2,11 @@
 from pathlib import Path
 import json
 import unittest
+from .support import live_config as load_config
 
-from ..simulation import SimulationConfig, SimulationRunner, EndpointConfig, WorkloadRequest, load_config
-from ..simulation.routing import load_strategy
-from ..simulation.cli import execute
+from ..simulation import SimulationConfig, SimulationRunner, EndpointConfig, WorkloadRequest
+from ..policies.routing import load_strategy
+from ..simulation.replay import execute
 from ..simulation.source import read_prompt_requests
 from .support import FakeTokenizer, config, endpoint, req, temporary_directory
 
@@ -49,7 +50,7 @@ class SimulationTests(unittest.TestCase):
         settings = config(batch_size=1, endpoints=(endpoint("a"), endpoint("b")))
         result = SimulationRunner(settings, strategy=LastEndpoint()).run([req(0), req(1)])
         self.assertEqual([r["endpoint_id"] for r in result.requests], ["b", "b"])
-        self.assertTrue(hasattr(load_strategy("workload_profiling.simulation.routing:MinRpmStrategy"), "select"))
+        self.assertTrue(hasattr(load_strategy("workload_profiling.policies.routing:MinRpmStrategy"), "select"))
 
     def test_invalid_strategy_selection_fails(self):
         class Invalid:

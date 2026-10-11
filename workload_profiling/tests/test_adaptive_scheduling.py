@@ -2,13 +2,15 @@
 from dataclasses import replace
 import json
 import unittest
+from .support import live_config as load_config
 
 from ..simulation import (SimulationRunner, EndpointView, LoadMonitor,
-                          WorkloadRequest, PriorityThenLightOrderStrategy, load_config)
-from ..simulation.classification import OutputPercentileClassifier
+                          WorkloadRequest, LightHeavyRankingPolicy)
+from ..policies.classification import OutputPercentileClassifier
 from ..simulation.priority import assign_priority
+from ..simulation.data_processing import RequestParameterGenerator
 from ..simulation.source import read_length_requests, read_prompt_requests
-from ..simulation.cli import execute
+from ..simulation.replay import execute
 from ..policies import PercentileReference
 from ..common.paths import PACKAGE
 from .support import config, endpoint, temporary_directory
@@ -18,11 +20,11 @@ from .support import FakeTokenizer
 def settings(**overrides):
     return config(**(dict(busy_concurrency_reserve=0,
                           endpoints=(endpoint(concurrency=2, latency=99),),
-                          batch_order="priority_then_light") | overrides))
+                          batch_order="light_heavy") | overrides))
 
 
-def request(name, level=1, tokens=2):
-    return WorkloadRequest(str(name), 1, tokens-1, priority_level=level, priority_level_source="recorded")
+def request(name, priority=0, tokens=2):
+    return WorkloadRequest(str(name), 1, tokens-1, priority=priority)
 
 
 class LoadMonitorTests(unittest.TestCase):
@@ -68,42 +70,52 @@ class LoadMonitorTests(unittest.TestCase):
                 settings(**changes)
 
 
-class FourLevelPriorityTests(unittest.TestCase):
+class BinaryPriorityTests(unittest.TestCase):
     def test_assignment_is_reproducible_independent_of_lengths_and_order(self):
-        cfg = settings(priority_assignment="four_level")
+        cfg = settings(priority_assignment="binary", high_priority_ratio=.5)
         source = [WorkloadRequest(str(index), 1, 1) for index in range(100)]
-        labels = {r.request_id: assign_priority(r, cfg).priority_level for r in source}
-        self.assertEqual(set(labels.values()), {1, 2, 3, 4})
-        self.assertEqual(labels, {r.request_id: assign_priority(replace(r, output_tokens=1000), cfg).priority_level
+        labels = {r.request_id: assign_priority(r, cfg).priority for r in source}
+        self.assertEqual(set(labels.values()), {0, 1})
+        self.assertEqual(labels, {r.request_id: assign_priority(replace(r, output_tokens=1000), cfg).priority
                                   for r in reversed(source)})
-        changed = {r.request_id: assign_priority(r, replace(cfg, priority_seed=1)).priority_level for r in source}
+        changed = {r.request_id: assign_priority(r, replace(cfg, priority_seed=1)).priority for r in source}
         self.assertNotEqual(labels, changed)
-        for level in range(1, 5):
-            explicit = request("explicit", level)
+        for priority in (0, 1):
+            explicit = request("explicit", priority)
             self.assertEqual(assign_priority(explicit, cfg), explicit)
 
-    def test_sources_preserve_explicit_numeric_levels(self):
+    def test_sources_preserve_explicit_binary_priority(self):
+        with temporary_directory() as directory:
+            path = directory / "lengths.jsonl"
+            path.write_text(json.dumps({"input_tokens": 1, "output_tokens": 1, "priority": 1}), encoding="utf-8")
+            recorded = next(read_length_requests(path))
+            self.assertEqual(recorded.priority, 1)
+            path.write_text(json.dumps({"prompt": {"messages": [{"role": "user", "content": "hi"}]},
+                                        "response": "answer", "priority": 0}), encoding="utf-8")
+            recorded = next(read_prompt_requests(path, FakeTokenizer()))
+            self.assertEqual(recorded.priority, 0)
+
+    def test_invalid_priorities_and_obsolete_input_are_rejected(self):
+        for priority in (2, 4, -1, True, 1.0, "1"):
+            with self.subTest(priority=priority), self.assertRaises(ValueError):
+                WorkloadRequest("a", 1, 1, priority=priority)
+        with self.assertRaises(ValueError):
+            settings(priority_assignment="four_level")
         with temporary_directory() as directory:
             path = directory / "lengths.jsonl"
             path.write_text(json.dumps({"input_tokens": 1, "output_tokens": 1, "priority_level": 4}), encoding="utf-8")
-            recorded = next(read_length_requests(path))
-            self.assertEqual((recorded.priority_level, recorded.priority_level_source), (4, "recorded"))
-            path.write_text(json.dumps({"prompt": {"messages": [{"role": "user", "content": "hi"}]},
-                                        "response": "answer", "priority_level": 1}), encoding="utf-8")
-            recorded = next(read_prompt_requests(path, FakeTokenizer()))
-            self.assertEqual((recorded.priority_level, recorded.priority_level_source), (1, "recorded"))
+            with self.assertRaisesRegex(ValueError, "source line 1"):
+                list(read_length_requests(path))
+        self.assertEqual(assign_priority(WorkloadRequest("default", 1, 1), settings()).priority, 0)
 
-    def test_invalid_levels_are_rejected(self):
-        for level in (0, 5, -1, True, 1.0, "4", None):
-            with self.subTest(level=level), self.assertRaises(ValueError):
-                WorkloadRequest("a", 1, 1, priority_level=level)
-
-    def test_window_order_uses_level_then_light_and_stable_arrival_ties(self):
+    def test_window_order_uses_light_first_and_stable_arrival_ties(self):
         cfg = settings()
-        requests = (request("three_heavy", 3, 20), request("two_light", 2),
-                    request("three_light", 3), request("three_light_later", 3), request("one", 1))
-        self.assertEqual(PriorityThenLightOrderStrategy(cfg).order_batch(requests, (), 0),
-                         ["three_light", "three_light_later", "three_heavy", "two_light", "one"])
+        requests = (request("heavy", tokens=20), request("light", tokens=5),
+                    request("light_later", tokens=2), request("heavy_later", tokens=15))
+        prepared = tuple(RequestParameterGenerator(cfg).prepare(r, 0).request for r in requests)
+        ranked = LightHeavyRankingPolicy(cfg).rank_requests(prepared, {"endpoints": (), "now_ms": 0})
+        self.assertEqual([r.request_id for r in ranked.requests],
+                         ["light", "light_later", "heavy", "heavy_later"])
 
 
 class AdaptiveSchedulingTests(unittest.TestCase):
@@ -128,10 +140,10 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         self.assertFalse(result.requests[1]["system_busy_at_arrival"])
         self.assertEqual(result.requests[2]["scheduling_path"], "busy_window")
 
-    def test_priority_four_bypasses_busy_window(self):
+    def test_high_priority_bypasses_busy_window(self):
         cfg = settings(endpoints=(endpoint(concurrency=5, latency=99),), busy_concurrency_reserve=3,
                        batch_size=100, batch_wait_ms=20)
-        result = SimulationRunner(cfg).run([request("first"), request("second"), request("window"), request("urgent", 4, 30)])
+        result = SimulationRunner(cfg).run([request("first"), request("second"), request("window"), request("urgent", 1, 30)])
         window, urgent = result.requests[2:]
         self.assertTrue(urgent["system_busy_at_arrival"])
         self.assertEqual(urgent["scheduling_path"], "priority_immediate")
@@ -140,13 +152,13 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         self.assertEqual(urgent["batch_wait_ms"], 0)
         self.assertGreater(window["dispatch_at_ms"], urgent["dispatch_at_ms"])
 
-    def test_priority_four_can_route_to_busy_endpoint_when_system_is_idle(self):
+    def test_high_priority_can_route_to_busy_endpoint_when_system_is_idle(self):
         class FirstEndpoint:
             def select(self, request, endpoints, now_ms):
                 return endpoints[0].endpoint_id
         cfg = settings(endpoints=(endpoint("a", concurrency=4, latency=99), endpoint("b", concurrency=4, latency=99)),
                        busy_concurrency_reserve=3)
-        result = SimulationRunner(cfg, strategy=FirstEndpoint()).run([request(0), request(1, 4)])
+        result = SimulationRunner(cfg, strategy=FirstEndpoint()).run([request(0), request(1, 1)])
         urgent = result.requests[1]
         self.assertFalse(urgent["system_busy_at_arrival"])
         self.assertEqual(urgent["routing_candidate_ids"], ["a", "b"])
@@ -162,9 +174,9 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unavailable"):
             SimulationRunner(cfg, strategy=AlwaysA()).run([request(0), request(1)])
 
-    def test_waiting_priority_four_gets_freed_slot_before_window_head(self):
+    def test_waiting_high_priority_gets_freed_slot_before_window_head(self):
         cfg = settings(endpoints=(endpoint(concurrency=1, latency=99),), batch_size=1)
-        result = SimulationRunner(cfg).run([request(0), request(1), request(2, 4)])
+        result = SimulationRunner(cfg).run([request(0), request(1), request(2, 1)])
         self.assertEqual([r["dispatch_at_ms"] for r in result.requests], [0, 200, 100])
         self.assertEqual(result.requests[2]["batch_wait_ms"], 0)
         self.assertEqual(result.requests[2]["capacity_wait_ms"], 98)
@@ -172,12 +184,12 @@ class AdaptiveSchedulingTests(unittest.TestCase):
 
     def test_priority_arriving_at_completion_precedes_old_window_queue(self):
         cfg = settings(endpoints=(endpoint(concurrency=1, latency=99),), batch_size=1, arrival_interval_ms=50)
-        result = SimulationRunner(cfg).run([request(0), request(1), request(2, 4)])
+        result = SimulationRunner(cfg).run([request(0), request(1), request(2, 1)])
         self.assertEqual([r["dispatch_at_ms"] for r in result.requests], [0, 200, 100])
 
     def test_blocked_urgent_head_does_not_block_feasible_urgent_request(self):
         cfg = settings(endpoints=(endpoint(concurrency=3, latency=99, tpm=100),))
-        result = SimulationRunner(cfg).run([request(0, 4, 60), request(1, 4, 60), request(2, 4, 20)])
+        result = SimulationRunner(cfg).run([request(0, 1, 60), request(1, 1, 60), request(2, 1, 20)])
         self.assertEqual([r["dispatch_at_ms"] for r in result.requests], [0, 60000, 2])
 
     def test_idle_request_waits_for_non_busy_scope_and_window_expiry_wakes_it(self):
@@ -186,7 +198,7 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         class LastEndpoint:
             def select(self, request, endpoints, now_ms):
                 return endpoints[-1].endpoint_id
-        result = SimulationRunner(cfg, strategy=LastEndpoint()).run([request(0, 4), request(1, 1, 20)])
+        result = SimulationRunner(cfg, strategy=LastEndpoint()).run([request(0, 1), request(1, 0, 20)])
         row = result.requests[1]
         self.assertEqual(row["scheduling_path"], "idle_immediate")
         self.assertEqual(row["endpoint_id"], "b")
@@ -210,9 +222,9 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         self.assertEqual(result.requests[2]["scheduling_path"], "idle_immediate")
         self.assertEqual(result.requests[2]["dispatch_at_ms"], 6)
 
-    def test_busy_window_uses_numeric_priority_order(self):
+    def test_busy_window_uses_light_first_order(self):
         cfg = settings(endpoints=(endpoint(concurrency=1, latency=99),), batch_size=3)
-        result = SimulationRunner(cfg).run([request(0, 2), request(1, 1), request(2, 3), request(3, 2)])
+        result = SimulationRunner(cfg).run([request(0), request(1, tokens=20), request(2), request(3, tokens=4)])
         self.assertEqual(result.batches[0]["dispatch_order"], ["2", "3", "1"])
         self.assertEqual([r["dispatch_at_ms"] for r in result.requests], [0, 300, 100, 200])
 
@@ -220,7 +232,8 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         cfg = settings(endpoints=(endpoint(concurrency=1, latency=99),), output_classification="percentile_dynamic",
                        batch_size=1)
         policy = OutputPercentileClassifier(cfg, PercentileReference.from_lengths([1, 2, 3, 4]))
-        result = SimulationRunner(cfg, classification_policy=policy).run([request(0), request(1), request(2, 4)])
+        result = SimulationRunner(cfg, batch_order=LightHeavyRankingPolicy(cfg, classifier=policy)).run(
+            [request(0), request(1), request(2, 1)])
         self.assertEqual([r["classified_at_ms"] for r in result.requests], [0, 1, 2])
         self.assertEqual([s["classification_context"] for s in policy.trace], ["immediate", "window", "immediate"])
         self.assertEqual([s["batch_id"] for s in policy.trace], [None, 0, None])
@@ -230,12 +243,12 @@ class AdaptiveSchedulingTests(unittest.TestCase):
 
     def test_oversized_immediate_requests_rejected_without_blocking_window(self):
         result = SimulationRunner(settings(endpoints=(endpoint(concurrency=1, latency=99, tpm=10),))).run(
-            [request(0, 4, 11), request(1)])
+            [request(0, 1, 11), request(1)])
         self.assertEqual([r["status"] for r in result.requests], ["rejected", "completed"])
         self.assertEqual(result.requests[1]["dispatch_at_ms"], 1)
 
     def test_empty_input_and_reproducible_generated_priorities(self):
-        cfg = settings(priority_assignment="four_level")
+        cfg = settings(priority_assignment="binary")
         self.assertEqual(SimulationRunner(cfg).run([]).summary["total_requests"], 0)
         source = [WorkloadRequest(str(index), 1, 1) for index in range(30)]
         self.assertEqual(SimulationRunner(cfg).run(source), SimulationRunner(cfg).run(source))
@@ -245,12 +258,15 @@ class AdaptiveSchedulingTests(unittest.TestCase):
         with temporary_directory() as directory:
             source = directory / "lengths.jsonl"
             source.write_text("\n".join(json.dumps({"request_id": str(i), "input_tokens": 1,
-                               "output_tokens": 2, "priority_level": i % 4 + 1}) for i in range(8)), encoding="utf-8")
+                               "output_tokens": 2, "priority": i % 2}) for i in range(8)), encoding="utf-8")
             first = execute(cfg, source=source, source_format="lengths", output=directory / "first.jsonl")
             second = execute(cfg, source=source, source_format="lengths", output=directory / "second.jsonl")
             self.assertEqual(first.requests, second.requests)
             self.assertEqual(first.events, second.events)
-            self.assertEqual(first.summary["priority_levels"]["4"]["requests"], 2)
+            self.assertEqual(first.summary["priority_counts"], {"0": 4, "1": 4})
+            self.assertEqual(first.summary["priority_stats"]["1"]["requests"], 4)
+            self.assertNotIn("priority_levels", first.summary)
+            self.assertTrue(all("priority_level" not in row for row in first.requests + first.events))
             self.assertEqual((directory / "first.jsonl").read_bytes(), (directory / "second.jsonl").read_bytes())
             routes = [json.loads(line) for line in (directory / "first.jsonl").read_text(encoding="utf-8").splitlines()]
             dispatched = [event for event in first.events if event["event"] == "dispatched"]

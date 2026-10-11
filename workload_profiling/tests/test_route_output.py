@@ -6,7 +6,7 @@ from unittest.mock import patch
 from ..adapters import LiteLLMAdapter, RouteOutputRecorder
 from ..core import EndpointConfig, RouteDecision, SchedulerRequest
 from ..simulation import SimulationRunner, WorkloadRequest
-from ..simulation.cli import execute
+from ..simulation.replay import execute
 from ..common.io import sha256_file
 from .support import config, endpoint, FakeTokenizer, temporary_directory
 
@@ -32,12 +32,12 @@ class RouteOutputTests(unittest.TestCase):
             self.assertEqual(recorder.count, 1)
 
     def test_window_output_follows_dispatch_order_and_omits_rejected(self):
-        settings = config(batch_size=3, batch_wait_ms=1000, batch_order="priority_then_light",
+        settings = config(batch_size=3, batch_wait_ms=1000, batch_order="light_heavy",
                           endpoints=(endpoint(concurrency=1, latency=99, tpm=1000),))
         with temporary_directory() as directory:
             source = directory / "source.jsonl"
-            rows = [{"request_id": str(i), "input_tokens": 1, "output_tokens": 1,
-                     "priority_level": level} for i, level in enumerate((2, 1, 3, 2))]
+            rows = [{"request_id": str(i), "input_tokens": 1, "output_tokens": tokens,
+                     "priority": 0} for i, tokens in enumerate((1, 20, 1, 2))]
             rows.append({"request_id": "oversize", "input_tokens": 1001, "output_tokens": 1})
             source.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
             output = directory / "routes.jsonl"
@@ -72,7 +72,7 @@ class RouteOutputTests(unittest.TestCase):
             self.assertEqual(output.read_text(encoding="utf-8"), "previous output\n")
             source.write_text('{"input_tokens":1,"output_tokens":1}\n', encoding="utf-8")
             actual_hash = sha256_file(source)
-            with patch("workload_profiling.simulation.cli.sha256_file", side_effect=(actual_hash, "changed")):
+            with patch("workload_profiling.simulation.replay.sha256_file", side_effect=(actual_hash, "changed")):
                 with self.assertRaisesRegex(ValueError, "Source changed"):
                     execute(config(), source=source, source_format="lengths", output=output)
             self.assertEqual(output.read_text(encoding="utf-8"), "previous output\n")

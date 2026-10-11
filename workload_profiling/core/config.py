@@ -52,7 +52,7 @@ class SchedulerConfig:
     cooldown_ms: int = 1000
     history_window_ms: int = 60000
     history_max_samples: int = 10000
-    ranking_policy: str = "priority_then_light"
+    ranking_policy: str = "light_heavy"
     routing_policy: str = "min_rpm"
     input_weight: float = 1
     output_weight: float = 1
@@ -104,17 +104,6 @@ class SchedulerConfig:
 
     def to_dict(self):
         return asdict(self)
-
-
-def load_endpoint_configs(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    rows = data.get("endpoints") if isinstance(data, dict) else data
-    if not isinstance(rows, list) or not rows:
-        raise ValueError("Endpoint config must contain a nonempty endpoints list")
-    configs = tuple(EndpointConfig(**row) for row in rows)
-    if len({e.endpoint_id for e in configs}) != len(configs):
-        raise ValueError("Duplicate endpoint_id")
-    return configs
 
 
 def load_scheduler_config(path):

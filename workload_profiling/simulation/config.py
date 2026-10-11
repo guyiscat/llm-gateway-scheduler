@@ -63,11 +63,11 @@ class SimulationConfig:
     window_ms: int = 60000
     strategy: str = "min_rpm"
     endpoints: tuple[EndpointConfig, ...] = field(default_factory=tuple)
-    batch_order: str = "priority_then_light"
+    batch_order: str = "light_heavy"
     arrival_mode: str = "fixed"
     burst_size: int = 512
     burst_span_ms: int = 20
-    priority_assignment: str = "four_level"
+    priority_assignment: str = "binary"
     priority_seed: int = 20261008
     output_classification: str = "percentile_dynamic"
     output_percentile_threshold: float = 0.8
@@ -110,8 +110,8 @@ class SimulationConfig:
                 raise ValueError(f"{name} must be a nonempty path string or null")
         if (self.output_reference_path is None) != (self.output_reference_metadata_path is None):
             raise ValueError("Output reference and metadata paths must be supplied together")
-        if self.priority_assignment not in ("uniform", "four_level", "binary"):
-            raise ValueError("priority_assignment must be uniform, four_level or binary")
+        if self.priority_assignment not in ("uniform", "binary"):
+            raise ValueError("priority_assignment must be uniform or binary")
         positive_integer(self.priority_seed, "priority_seed", allow_zero=True)
         if self.arrival_mode not in ("fixed", "burst", "random"):
             raise ValueError("arrival_mode must be fixed, burst or random")
@@ -186,6 +186,8 @@ def load_scheduler_settings(path=CONFIG_PATH):
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError("Simulation config must be an object")
+    if "endpoint_config" in data or "endpoints" in data:
+        raise ValueError("Static endpoint configuration was removed; endpoints must come from the live state file")
     if "scheduler_config" in data:
         return load_scheduler_config(path.parent / data["scheduler_config"])
     aliases = {"max_batch_size": "batch_size", "max_wait_ms": "batch_wait_ms",
@@ -198,24 +200,24 @@ def load_scheduler_settings(path=CONFIG_PATH):
     return SchedulerConfig(**values)
 
 
-def load_config(path=CONFIG_PATH, *, endpoint_configs=None):
-    if endpoint_configs is not None:
-        from ..core.config import EndpointConfig as CoreEndpointConfig
-        endpoint_configs = tuple(endpoint_configs)
-        if not endpoint_configs or any(not isinstance(endpoint, CoreEndpointConfig) for endpoint in endpoint_configs):
-            raise ValueError("Endpoint override requires a nonempty set of core EndpointConfig objects")
+def load_config(path=CONFIG_PATH, *, endpoint_configs):
+    from ..core.config import EndpointConfig as CoreEndpointConfig
+    endpoint_configs = tuple(endpoint_configs)
+    if not endpoint_configs or any(not isinstance(endpoint, CoreEndpointConfig) for endpoint in endpoint_configs):
+        raise ValueError("Discovered endpoints require a nonempty set of core EndpointConfig objects")
     path = Path(path).resolve()
     settings = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(settings, dict):
         raise ValueError("Simulation config must be an object")
-    if "endpoint_config" in settings or "scheduler_config" in settings:
-        from ..core.config import load_endpoint_configs, load_scheduler_config
+    if "endpoint_config" in settings or "endpoints" in settings:
+        raise ValueError("Static endpoint configuration was removed; endpoints must come from the live state file")
+    if "scheduler_config" in settings:
+        from ..core.config import load_scheduler_config
         settings = dict(settings)
-        endpoint_path = settings.pop("endpoint_config", None)
         scheduler_path = settings.pop("scheduler_config", None)
-        if not all(isinstance(p, str) and p.strip() for p in (endpoint_path, scheduler_path)):
-            raise ValueError("Split config requires endpoint_config and scheduler_config paths")
-        endpoints = tuple(endpoint_configs) if endpoint_configs is not None else load_endpoint_configs(path.parent / endpoint_path)
+        if not isinstance(scheduler_path, str) or not scheduler_path.strip():
+            raise ValueError("scheduler_config requires a nonempty path")
+        endpoints = endpoint_configs
         scheduler = load_scheduler_config(path.parent / scheduler_path).to_dict()
         aliases = {"max_batch_size": "batch_size", "max_wait_ms": "batch_wait_ms",
                    "ranking_policy": "batch_order", "routing_policy": "strategy"}
@@ -228,7 +230,7 @@ def load_config(path=CONFIG_PATH, *, endpoint_configs=None):
                           "service_jitter_fraction", "service_jitter_seed"}
         if not isinstance(service, dict) or not set(service) <= service_fields:
             raise ValueError("Invalid simulation service_time fields")
-        if endpoint_configs is not None and isinstance(overrides, dict):
+        if isinstance(overrides, dict):
             overrides = {key: value for key, value in overrides.items() if key in {e.endpoint_id for e in endpoints}}
         if not isinstance(overrides, dict) or not set(overrides) <= {e.endpoint_id for e in endpoints}:
             raise ValueError("Unknown endpoint_service endpoint")
@@ -239,12 +241,8 @@ def load_config(path=CONFIG_PATH, *, endpoint_configs=None):
                 raise ValueError("Invalid endpoint_service fields")
             rows.append({**asdict(endpoint), **service, **extra})
         settings.update(scheduler, endpoints=rows)
-    elif endpoint_configs is not None:
-        originals = settings.get("endpoints", [])
-        simulation_fields = set(EndpointConfig.__dataclass_fields__) - set(endpoint_configs[0].__dataclass_fields__)
-        template = originals[0] if originals else {}
-        settings["endpoints"] = [{**{key: template[key] for key in simulation_fields if key in template},
-                                  **asdict(endpoint)} for endpoint in endpoint_configs]
+    else:
+        settings["endpoints"] = [asdict(endpoint) for endpoint in endpoint_configs]
     config = SimulationConfig.from_dict(settings)
     resources = {}
     for name in ("output_policy_path", "output_reference_path", "output_reference_metadata_path"):

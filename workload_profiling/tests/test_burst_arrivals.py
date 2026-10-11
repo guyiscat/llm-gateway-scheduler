@@ -1,8 +1,9 @@
 from dataclasses import replace
 import unittest
+from .support import live_config as load_config
 
 from ..simulation.arrivals import burst_arrival_times
-from ..simulation import SimulationRunner, load_config
+from ..simulation import SimulationRunner
 from .support import config, endpoint, req
 
 

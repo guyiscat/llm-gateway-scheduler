@@ -1,11 +1,10 @@
 {
-  "endpoint_config": "endpoint_config.json",
   "scheduler_config": "scheduler_config.json",
   "arrival_interval_ms": 1,
   "arrival_mode": "burst",
   "burst_size": 512,
   "burst_span_ms": 20,
-  "priority_assignment": "four_level",
+  "priority_assignment": "binary",
   "priority_seed": 20261008,
   "high_priority_ratio": 0.1,
   "arrival_seed": 20261008,

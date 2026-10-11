@@ -63,7 +63,8 @@ class OutputPercentileClassifier:
                          "policy_source": self.policy_source, "reference_source": self.reference_source,
                          "classification_time": "immediate_admission_or_batch_release; frozen afterwards",
                          "pressure_inputs": "current concurrency + ready + this arrived batch; no future arrivals"},
-            "reference": {"values": self.reference.values.tolist(), "counts": self.reference.counts.tolist()}})
+            "reference": {"values": self.reference.values.tolist(), "counts": self.reference.counts.tolist(),
+                          "sample_count": self.reference.sample_count}})
 
     def classify_batch(self, requests, endpoints, ready_count, now_ms, batch_id):
         capacity_known = all(e.concurrency_limit is not None for e in endpoints)

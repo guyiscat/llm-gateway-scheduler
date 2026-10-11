@@ -4,17 +4,18 @@ import json
 import subprocess
 import sys
 import unittest
+from .support import live_config as load_config
 
 from ..common.paths import PACKAGE, ROOT
 from ..core import (Scheduler, SchedulerRequest, SchedulerConfig, EndpointConfig,
                     ExecutionResult, EndpointFilter, EndpointStateManager, RouteDecision,
-                    load_endpoint_configs, load_scheduler_config)
+                    load_scheduler_config)
 from ..core.batch_window import BatchWindow
 from ..core.busy_detector import LoadMonitor
 from ..core.endpoint_history import EndpointHistory
 from ..policies.ranking import WeightedLengthOrderStrategy
 from ..policies.routing import load_strategy
-from ..simulation import load_config, SimulationConfig, SimulationRunner, WorkloadRequest
+from ..simulation import SimulationConfig, SimulationRunner, WorkloadRequest
 from ..simulation.data_processing import RequestParameterGenerator
 from ..simulation.request_sender import SimulatedRequestSender
 from .support import config, temporary_directory
@@ -278,16 +279,15 @@ class RefactoredSimulationTests(unittest.TestCase):
     def test_split_config_preserves_defaults_and_portable_flat_exports(self):
         loaded = load_config()
         self.assertEqual((loaded.batch_size, loaded.batch_wait_ms, loaded.strategy, loaded.batch_order),
-                         (16, 20, "min_rpm", "priority_then_light"))
-        self.assertEqual(loaded.priority_assignment, "four_level")
+                         (16, 20, "min_rpm", "light_heavy"))
+        self.assertEqual(loaded.priority_assignment, "binary")
         self.assertEqual(loaded.endpoints[0].concurrency_limit, 8)
         self.assertEqual(loaded.endpoints[0].input_tokens_per_ms, 2000)
-        self.assertEqual(load_endpoint_configs(PACKAGE / "config/endpoint_config.json")[0], loaded.endpoints[0].to_core())
         self.assertEqual(load_scheduler_config(PACKAGE / "config/scheduler_config.json"), loaded.scheduler_config())
         with temporary_directory() as directory:
             path = directory / "flat.json"
             path.write_text(json.dumps(loaded.to_dict()), encoding="utf-8")
-            self.assertEqual(load_config(path), loaded)
+            self.assertEqual(SimulationConfig.from_dict(json.loads(path.read_text(encoding="utf-8"))), loaded)
 
     def test_random_sender_and_binary_priority_are_reproducible(self):
         settings = config(arrival_mode="random", random_min_interval_ms=2, random_max_interval_ms=7,

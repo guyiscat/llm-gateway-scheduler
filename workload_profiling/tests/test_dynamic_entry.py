@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 import unittest
 
-from ..simulation.classification import OutputPercentileClassifier
-from ..simulation.models import EndpointView
-from ..simulation.cli import execute
+from ..policies.classification import OutputPercentileClassifier
+from ..core.endpoint_state import EndpointView
+from ..simulation.replay import execute
 from ..common.paths import PACKAGE
 from ..common.io import sha256_file
 from ..policies import PercentileReference
@@ -16,7 +16,7 @@ from .support import config, endpoint, req, temporary_directory
 class DynamicEntryTests(unittest.TestCase):
     def settings(self, **changes):
         return config(**(dict(output_classification="percentile_dynamic",
-                             batch_order="priority_then_light", batch_size=1,
+                             batch_order="light_heavy", batch_size=1,
                              endpoints=(endpoint(concurrency=1, latency=9),)) | changes))
 
     def profile(self):

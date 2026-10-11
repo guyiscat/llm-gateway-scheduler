@@ -1,9 +1,8 @@
-"""Preview routes or send them to LiteLLM in a reusable SSH session.
+"""Send routed handoffs to LiteLLM over a reusable authenticated SSH session.
 
 No SDK or third-party SSH dependency. Credentials are read from the terminal
 or KEY environment variable, never stored in files or process arguments.
 """
-import argparse
 import codecs
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
@@ -17,12 +16,12 @@ import socket
 import subprocess
 import sys
 import time
+import warnings
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 from uuid import uuid4
 
-from ..common.paths import CACHE, RESULTS
-from ..common.run_log import RunLog
+from ..common.paths import CACHE
 
 KNOWN_HOSTS = CACHE / "litellm_known_hosts"
 CALL_FIELDS = {"model", "messages", "max_tokens", "stream", "metadata", "temperature",
@@ -45,14 +44,6 @@ def iter_routes(path):
             yield record
 
 
-def read_route(path, request_id=None):
-    """Read exactly one selected dispatch; never replay the whole JSONL file."""
-    for record in iter_routes(path):
-        if request_id is None or record["request_id"] == request_id:
-            return record
-    raise ValueError("No matching route record")
-
-
 def validate_payload_options(*, endpoint_groups=None, max_tokens=None, no_max_tokens=False):
     """Validate shared delivery controls without inventing a request model."""
     if not isinstance(no_max_tokens, bool):
@@ -66,7 +57,7 @@ def validate_payload_options(*, endpoint_groups=None, max_tokens=None, no_max_to
         raise ValueError("endpoint_groups must be a nonempty list or tuple of nonempty strings")
 
 
-def build_payload(route, *, endpoint_groups=None, smoke=False, max_tokens=None, no_max_tokens=False):
+def build_payload(route, *, endpoint_groups=None, max_tokens=None, no_max_tokens=False):
     """Use each request's model; optional groups do not bind local endpoint IDs."""
     validate_payload_options(endpoint_groups=endpoint_groups, max_tokens=max_tokens, no_max_tokens=no_max_tokens)
     params = route["litellm_params"]
@@ -93,12 +84,6 @@ def build_payload(route, *, endpoint_groups=None, smoke=False, max_tokens=None, 
     metadata.pop("force_endpoint", None)
     if not metadata:
         payload.pop("metadata", None)
-    if smoke:
-        # A connectivity probe intentionally replaces recorded input and controls.
-        payload = {"model": payload["model"], "messages": [{"role": "user", "content": "hi"}],
-                   "stream": False}
-        if groups is not None:
-            payload["metadata"] = {"endpoint_group": groups}
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages or any(not isinstance(m, dict) for m in messages):
         raise ValueError("A real call requires a nonempty messages list")
@@ -188,10 +173,11 @@ class LiteLLMSession:
 
     The session neither reconnects nor resends automatically after failure.
     """
-    def __init__(self, target, *, proxy_port=4000, timeout=60, run_log=None):
+    def __init__(self, target, *, proxy_port=4000, timeout=60, run_log=None, tunnel_lease=None):
         validate_timeout(timeout)
         self.target, self.proxy_port, self.timeout = target, proxy_port, timeout
         self.run_log = run_log
+        self.tunnel_lease = tunnel_lease
         self._stack = self._port = self._key = self._opener = None
 
     def __enter__(self):
@@ -199,7 +185,10 @@ class LiteLLMSession:
             raise RuntimeError("Session is already open")
         stack = ExitStack()
         try:
-            port = stack.enter_context(ssh_tunnel(self.target, proxy_port=self.proxy_port, timeout=self.timeout))
+            options = {"proxy_port": self.proxy_port, "timeout": self.timeout}
+            if self.tunnel_lease is not None:
+                options["lease"] = self.tunnel_lease
+            port = stack.enter_context(ssh_tunnel(self.target, **options))
             key = os.environ.get("KEY") or getpass.getpass("LiteLLM API key (hidden): ")
             validate_api_key(key)
             if self.run_log is not None:
@@ -211,11 +200,34 @@ class LiteLLMSession:
         self._stack, self._port, self._key, self._opener = stack, port, key, opener
         return self
 
+    def adopt_connection(self, port, api_key):
+        """Use an authenticated tunnel whose process is owned by the caller."""
+        if self._stack is not None:
+            raise RuntimeError("Session is already open")
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("Invalid local tunnel port")
+        validate_api_key(api_key)
+        self._stack, self._port, self._key = ExitStack(), port, api_key
+        self._opener = build_opener(ProxyHandler({}), NoRedirect())
+        return self
+
+    @contextmanager
+    def recording(self, run_log):
+        """Associate a reusable connection with one fresh batch log."""
+        previous = self.run_log
+        self.run_log = run_log
+        if self._key is not None:
+            run_log.register_secret(self._key)
+        try:
+            yield self
+        finally:
+            self.run_log = previous
+
     def __exit__(self, *exception):
         stack = self._stack
         self._stack = self._port = self._key = self._opener = None
         if stack is not None:
-            return stack.__exit__(*exception)
+            return stack.__exit__(*(exception or (None, None, None)))
 
     def get_model_info(self):
         """Authenticated metadata GET through the already logged-in tunnel."""
@@ -280,7 +292,7 @@ def ssh_executable():
 
 
 @contextmanager
-def ssh_tunnel(target, *, proxy_port=4000, timeout=60):
+def ssh_tunnel(target, *, proxy_port=4000, timeout=60, lease=None):
     """Let OpenSSH authenticate interactively; bind only local loopback."""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*", target):
         raise ValueError("SSH target must be user@host")
@@ -295,7 +307,12 @@ def ssh_tunnel(target, *, proxy_port=4000, timeout=60):
         "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={KNOWN_HOSTS}",
         "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
         "-L", f"127.0.0.1:{port}:127.0.0.1:{proxy_port}", target]
-    process = subprocess.Popen(command)
+    # Preserve interactive password entry, but protect a transferred tunnel
+    # from Ctrl+C in later batch commands in the same Windows console.
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if lease is not None and os.name == "nt" else {}
+    process = subprocess.Popen(command, **options)
+    if lease is not None:
+        lease.process = process
     try:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -310,76 +327,16 @@ def ssh_tunnel(target, *, proxy_port=4000, timeout=60):
             raise TimeoutError("SSH tunnel startup timed out")
         yield port
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--routes", type=Path, default=RESULTS / "routes.jsonl")
-    logs = parser.add_mutually_exclusive_group()
-    logs.add_argument("--log-dir", type=Path, help="New run directory with one JSONL file per request")
-    logs.add_argument("--log-file", dest="log_dir", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--request-id", help="Select one request; default is first dispatched record")
-    parser.add_argument("--endpoint-group", action="append", help="Optional remote group; no default; may be repeated")
-    parser.add_argument("--smoke", action="store_true", help="Use hi instead of recorded messages")
-    limits = parser.add_mutually_exclusive_group()
-    limits.add_argument("--max-tokens", type=int, help="Override output limit; default preserves the route value")
-    limits.add_argument("--no-max-tokens", action="store_true", help="Omit max_tokens, including any recorded limit")
-    parser.add_argument("--ssh-target", help="SSH login user@host; required for sending")
-    parser.add_argument("--proxy-port", type=int, default=4000)
-    parser.add_argument("--timeout", type=int, default=60)
-    parser.add_argument("--send", action="store_true", help="Send one POST; otherwise preview locally")
-    parser.add_argument("--session", action="store_true", help="With --send, keep SSH open and select requests interactively")
-    args = parser.parse_args()
-    try:
-        validate_timeout(args.timeout)
-        if args.session and not args.send:
-            raise ValueError("--session requires --send")
-        route = read_route(args.routes, args.request_id)
-        options = dict(endpoint_groups=args.endpoint_group, smoke=args.smoke,
-                       max_tokens=args.max_tokens, no_max_tokens=args.no_max_tokens)
-        payload = build_payload(route, **options)
-        if not args.send:
-            print(json.dumps({"request_id": route["request_id"], "selected_endpoint_id": route["selected_endpoint_id"],
-                              "mode": "smoke" if args.smoke else "route", "payload": payload},
-                             ensure_ascii=False, indent=2))
-            return
-        if not args.ssh_target:
-            raise ValueError("--ssh-target is required with --send")
-        with RunLog(args.log_dir, mode="gateway", protected_paths=(args.routes,)) as log, \
-                LiteLLMSession(args.ssh_target, proxy_port=args.proxy_port, timeout=args.timeout, run_log=log) as session:
-            print(f"Request log directory: {log.path}", file=sys.stderr, flush=True)
-            if args.session:
-                print("Session ready. Enter a request ID, Enter for the default selection, or /quit to exit.")
-                while True:
-                    selection = input("request_id> ").strip()
-                    if selection == "/quit":
-                        return
-                    try:
-                        # Reload each selection so newly published route files are visible.
-                        selected = read_route(args.routes, selection or args.request_id)
-                        current_payload = build_payload(selected, **options)
-                        print(f"Sending request_id={selected['request_id']}")
-                        display_result(session.send(current_payload, on_response_chunk=display_response_chunk,
-                            request_id=selected["request_id"], selected_endpoint_id=selected["selected_endpoint_id"]))
-                    except (ValueError, TypeError, OSError) as error:
-                        print(f"Request failed; not retried: {error}", file=sys.stderr)
-            else:
-                result = session.send(payload, on_response_chunk=display_response_chunk,
-                                      request_id=route["request_id"], selected_endpoint_id=route["selected_endpoint_id"])
-                display_result(result)
-        if not 200 <= result["http_status"] < 300:
-            raise SystemExit(2)
-    except (KeyboardInterrupt, EOFError):
-        print("\nSession closed.")
-    except (ValueError, TypeError, OSError) as error:
-        parser.error(str(error))
-
-
-if __name__ == "__main__":
-    main()
+        if lease is not None and lease.detached:
+            # The worker already owns a process HANDLE; release parent wrappers.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", ResourceWarning)
+                lease.process = None
+                process = None
+        else:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()

@@ -1,14 +1,15 @@
 from dataclasses import replace
 import math
 import unittest
+from .support import live_config as load_config
 
-from ..simulation import SimulationRunner, EndpointConfig, WorkloadRequest, load_config
-from ..simulation.models import EndpointState
+from ..simulation import SimulationRunner, EndpointConfig, WorkloadRequest
+from ..simulation.execution import SimulatedEndpoint
 
 
 class ServiceJitterTests(unittest.TestCase):
     def test_zero_jitter_preserves_original_timing(self):
-        state = EndpointState(EndpointConfig("a", 600, 5000000, 8))
+        state = SimulatedEndpoint(EndpointConfig("a", 600, 5000000, 8))
         for i, o in ((0, 0), (101, 999), (377804, 282)):
             request = WorkloadRequest(str(i), i, o)
             self.assertEqual(state.service_time_ms(request), max(1, math.ceil(5 + i / 2000 + o / 20)))
@@ -16,13 +17,13 @@ class ServiceJitterTests(unittest.TestCase):
     def test_bounds_and_order_independent_repeatability(self):
         settings = EndpointConfig("a", 600, 5000000, 8, service_jitter_fraction=.2)
         requests = [WorkloadRequest(str(i), 10, 1000) for i in range(100)]
-        first = EndpointState(settings)
+        first = SimulatedEndpoint(settings)
         draws = {r.request_id: first.service_multiplier(r) for r in requests}
-        repeated = EndpointState(settings)
+        repeated = SimulatedEndpoint(settings)
         self.assertEqual(draws, {r.request_id: repeated.service_multiplier(r) for r in reversed(requests)})
         self.assertTrue(all(.8 <= value <= 1.2 for value in draws.values()))
         self.assertGreater(len(set(draws.values())), 90)
-        alternate = EndpointState(replace(settings, service_jitter_seed=1))
+        alternate = SimulatedEndpoint(replace(settings, service_jitter_seed=1))
         self.assertNotEqual(draws, {r.request_id: alternate.service_multiplier(r) for r in requests})
 
     def test_invalid_settings(self):

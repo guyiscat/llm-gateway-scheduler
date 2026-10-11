@@ -28,7 +28,7 @@ class CommandEntryTests(unittest.TestCase):
 
 
     def test_subcommand_failure_restores_argv(self):
-        argv = ["workload_profiling", "replay", "--invalid"]
+        argv = ["workload_profiling", "replay-send", "--invalid"]
         def fail():
             raise SystemExit(2)
         with patch.object(sys, "argv", argv), patch.object(project_cli.importlib, "import_module",
@@ -53,6 +53,13 @@ class CommandEntryTests(unittest.TestCase):
                 project_cli.main()
             self.assertEqual(error.exception.code, 2)
             imported.assert_not_called()
+
+    def test_old_entrypoints_are_removed(self):
+        for command in ("replay", "endpoint-watch"):
+            with patch.object(sys, "argv", ["workload_profiling", command]), redirect_stderr(StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    project_cli.main()
+                self.assertEqual(error.exception.code, 2)
 
     def test_real_help_for_all_entrypoints_without_data_loading(self):
         commands = [

@@ -1,8 +1,9 @@
 import unittest
 
 from ..simulation import SimulationRunner
-from ..simulation.classification import OutputPercentileClassifier
-from ..simulation.models import EndpointView
+from ..policies.classification import OutputPercentileClassifier
+from ..policies.light_heavy_ranking import LightHeavyRankingPolicy
+from ..core.endpoint_state import EndpointView
 from ..policies import PercentileReference
 from .support import config, endpoint, req
 
@@ -12,7 +13,7 @@ class DynamicClassificationTests(unittest.TestCase):
         return PercentileReference.from_lengths(list(range(1,11)))
 
     def settings(self, mode="percentile_dynamic", **overrides):
-        return config(**(dict(output_classification=mode, batch_order="priority_then_light") | overrides))
+        return config(**(dict(output_classification=mode, batch_order="light_heavy") | overrides))
 
     def test_pressure_drives_monotone_threshold_levels(self):
         settings = self.settings()
@@ -42,8 +43,10 @@ class DynamicClassificationTests(unittest.TestCase):
     def test_classification_is_frozen_and_replay_repeats(self):
         settings = self.settings(batch_size=1,endpoints=(endpoint(concurrency=1),))
         requests = [req(0,1,8),req(1,1,8)]
-        first = SimulationRunner(settings,classification_policy=OutputPercentileClassifier(settings,self.reference())).run(requests)
-        second = SimulationRunner(settings,classification_policy=OutputPercentileClassifier(settings,self.reference())).run(requests)
+        first = SimulationRunner(settings, batch_order=LightHeavyRankingPolicy(settings,
+            classifier=OutputPercentileClassifier(settings, self.reference()))).run(requests)
+        second = SimulationRunner(settings, batch_order=LightHeavyRankingPolicy(settings,
+            classifier=OutputPercentileClassifier(settings, self.reference()))).run(requests)
         self.assertEqual(first,second)
         self.assertEqual([r["output_percentile_threshold"] for r in first.requests],[.9,.6])
         self.assertEqual([r["heavy"] for r in first.requests],[False,True])

@@ -1,10 +1,8 @@
 """Request/response tracing, incremental durability and redaction without network."""
-from contextlib import nullcontext, redirect_stdout
+from contextlib import nullcontext
 from dataclasses import asdict
-from io import StringIO
 import json
 import os
-import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -12,9 +10,8 @@ from unittest.mock import patch
 from ..common.run_log import RunLog
 from ..core.request import SchedulerRequest
 from ..integrations import litellm_gateway as gateway
-from ..integrations import replay_litellm as bridge
 from ..simulation import SimulationRunner, WorkloadRequest
-from ..simulation.cli import execute
+from ..simulation.replay import execute
 from .support import config, endpoint, temporary_directory
 from .test_litellm_gateway import Response
 
@@ -161,40 +158,7 @@ class RunLogTests(unittest.TestCase):
             self.assertEqual(response["result"]["response_format"], "sse")
             self.assertEqual(response["result"]["response"], transcript)
 
-    def test_integrated_replay_logs_all_requests_and_real_responses_in_one_run(self):
-        with temporary_directory() as directory:
-            source, output, path = directory / "source.jsonl", directory / "routes.jsonl", directory / "run.jsonl"
-            rows = [{"request_id": str(i), "input_tokens": tokens, "output_tokens": 1,
-                     "messages": [{"role": "user", "content": f"question-{i}"}]} for i, tokens in enumerate((1, 20, 1))]
-            source.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
-            with patch.object(bridge, "load_config", return_value=config(endpoints=(endpoint(tpm=15),))), \
-                    patch.dict(os.environ, {"KEY": "actual-secret"}), redirect_stdout(StringIO()), \
-                    patch.object(gateway, "ssh_tunnel", return_value=nullcontext(1234)) as ssh, \
-                    patch.object(gateway, "build_opener", return_value=SimpleNamespace(open=lambda *a, **kw:
-                        Response(b'{"choices":[{"message":{"content":"answer"}}]}'))):
-                result = bridge.replay_and_send(ssh_target="ubuntu@example.com", source=source,
-                    source_format="lengths", output=output, log_file=path, live_endpoints=False)
-            ssh.assert_called_once()
-            events = read_log(path)
-            requests = [row for row in events if row["event"] == "scheduler_request"]
-            responses = [row for row in events if row["event"] == "litellm_response"]
-            self.assertEqual([row["request_id"] for row in requests], ["0", "1", "2"])
-            self.assertEqual([row["request_id"] for row in responses], ["0", "2"])
-            self.assertEqual(result.log_path, path.with_suffix(""))
-            self.assertEqual(responses[0]["result"]["response"]["choices"][0]["message"]["content"], "answer")
-            self.assertEqual(len({row["run_id"] for row in events}), 1)
 
-    def test_local_replay_cli_logs_requests_without_fabricated_model_responses(self):
-        from ..simulation import cli
-        with temporary_directory() as directory:
-            source, output, log = directory / "source.jsonl", directory / "routes.jsonl", directory / "log.jsonl"
-            source.write_text('{"input_tokens":1,"output_tokens":2}', encoding="utf-8")
-            argv = ["replay", "--source", str(source), "--source-format", "lengths", "--output", str(output), "--log-file", str(log)]
-            with patch.object(sys, "argv", argv), patch.object(cli, "load_config", return_value=config()), redirect_stdout(StringIO()):
-                cli.main()
-            events = read_log(log)
-            self.assertEqual(sum(row["event"] == "scheduler_request" for row in events), 1)
-            self.assertFalse(any(row["event"].startswith("litellm_") for row in events))
 
     def test_interrupt_keeps_prior_events_and_marks_cancelled_run(self):
         with temporary_directory() as directory:
@@ -267,17 +231,3 @@ class RunLogTests(unittest.TestCase):
                 rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
                 self.assertEqual(len({row["request_id"] for row in rows}), 1)
                 self.assertEqual([row["event"] for row in rows], ["litellm_send_started", "litellm_response"])
-
-    def test_local_cli_log_dir_option_creates_request_files(self):
-        from ..simulation import cli
-        with temporary_directory() as directory:
-            source, output, log_dir = directory / "source.jsonl", directory / "routes.jsonl", directory / "logs"
-            source.write_text('{"input_tokens":1,"output_tokens":2}', encoding="utf-8")
-            argv = ["replay", "--source", str(source), "--source-format", "lengths", "--output", str(output), "--log-dir", str(log_dir)]
-            with patch.object(sys, "argv", argv), patch.object(cli, "load_config", return_value=config()), redirect_stdout(StringIO()):
-                cli.main()
-            self.assertTrue((log_dir / "run.jsonl").is_file())
-            path = log_dir / "requests" / "request_000000.jsonl"
-            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-            self.assertEqual({row["request_id"] for row in rows}, {"request_000000"})
-            self.assertEqual([row["event"] for row in rows], ["scheduler_request", "simulation_outcome"])
